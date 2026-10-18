@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iOSView</title>
+<link rel="icon" type="image/png" sizes="256x256" href="icon.png">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><img class="logo" src="icon.svg" alt="">iOS<b>View</b></div>
+
+  <button id="syncBtn" class="sync" title="Bật/tắt đồng bộ thao tác (F2)">
+    <span class="sync-dot"></span><span id="syncLabel">Đồng bộ</span>
+  </button>
+  <div class="group">
+    <button id="selAll" title="Đưa tất cả máy vào nhóm đồng bộ">Chọn hết</button>
+    <button id="selNone" title="Bỏ tất cả khỏi nhóm">Bỏ chọn</button>
+  </div>
+
+  <div class="group hw" title="Phím cứng — gửi tới nhóm đồng bộ (hoặc máy đang chọn khi tắt đồng bộ)">
+    <button data-btn="home" title="Home (chuột phải trên màn hình cũng là Home)">Home</button>
+    <button data-btn="switcher" title="Đa nhiệm (nhấn Home 2 lần)">Đa nhiệm</button>
+    <button data-btn="power" title="Khoá / mở màn hình (chuột giữa)">Khoá</button>
+    <button data-btn="voldown" title="Giảm âm lượng">Vol−</button>
+    <button data-btn="volup" title="Tăng âm lượng">Vol+</button>
+  </div>
+
+  <button id="pasteBtn" title="Gõ/dán nội dung clipboard của PC vào iPhone (hoặc trỏ chuột vào iPhone rồi bấm Ctrl+V). Chữ không dấu được gõ thẳng; có dấu thì nạp clipboard để chạm Paste">Dán (Ctrl+V)</button>
+  <form id="textForm" class="textbox" autocomplete="off">
+    <input id="textInput" placeholder="Gõ nội dung rồi Enter để gõ thẳng vào các máy…" spellcheck="false">
+    <button type="submit">Gửi</button>
+  </form>
+
+  <div class="spacer"></div>
+  <label class="size" title="Kích thước ô">
+    <input id="sizeRange" type="range" min="140" max="520" step="10" value="230">
+  </label>
+  <div class="group">
+    <button id="addWifiBtn" title="Thêm máy qua Wi-Fi bằng IP">+ Wi‑Fi</button>
+    <button id="scanBtn" title="Tìm TrollVNC trong mạng LAN">Quét LAN</button>
+    <button id="settingsBtn" class="icon" title="Cài đặt">⚙</button>
+  </div>
+  <span id="netTotal" class="net" hidden></span>
+  <div id="counter" class="counter">0 / 0</div>
+</header>
+
+<div id="usbWarn" class="warn" hidden></div>
+
+<main id="grid" class="grid"></main>
+
+<div id="empty" class="empty" hidden>
+  <div class="empty-card">
+    <h2>Chưa có iPhone nào</h2>
+    <ol>
+      <li>Cài <b>TrollVNC</b> trên iPhone (jailbreak hoặc TrollStore) và bật server (cổng mặc định <code>5901</code>).</li>
+      <li>Cắm USB vào PC (cần app <b>Apple Devices</b> hoặc <b>iTunes</b>) và bấm <b>Tin cậy</b> trên iPhone — máy sẽ tự hiện.</li>
+      <li>Hoặc dùng <b>+ Wi‑Fi</b> / <b>Quét LAN</b> để thêm máy cùng mạng.</li>
+    </ol>
+  </div>
+</div>
+
+<div id="focus" class="focus" hidden>
+  <div class="focus-head">
+    <span id="focusName"></span>
+    <span class="hint">Esc để thoát · trái = chạm · phải = Home · giữa = Khoá · lăn = cuộn · Ctrl+V = dán · Ctrl+A = chọn hết · Ctrl+Backspace = xoá ô</span>
+    <div id="focusNav" class="navbar inline"></div>
+    <button id="focusClose">Đóng ✕</button>
+  </div>
+  <div id="focusStage" class="focus-stage"></div>
+</div>
+
+<dialog id="settings">
+  <form method="dialog" id="settingsForm">
+    <h3>Cài đặt</h3>
+    <label>Mật khẩu TrollVNC (để trống nếu không đặt)
+      <input id="setPw" type="password" maxlength="8" autocomplete="off">
+    </label>
+    <label>Cổng VNC trên iPhone
+      <input id="setPort" type="number" min="1" max="65535">
+    </label>
+    <label>Chất lượng hình ở lưới (0 nhẹ nhất – 9 nét nhất, khuyên dùng 4–5)
+      <input id="setQ" type="range" min="0" max="9">
+    </label>
+    <label>Chất lượng khi phóng to một máy (khuyên dùng 7)
+      <input id="setFQ" type="range" min="1" max="9">
+    </label>
+    <label class="check"><input id="setH264" type="checkbox"> Dùng H.264 nén phần cứng (nhanh, mát máy hơn)
+      <small>Cần cài TrollVNC bản iOSView mới (có luồng H.264). Máy nào chưa cài sẽ tự dùng JPEG như cũ. Thanh chất lượng ở trên điều chỉnh bitrate.</small>
+    </label>
+    <label class="check"><input id="setStats" type="checkbox"> Hiện fps / băng thông trên từng máy
+      <small>Dùng để đo: fps thấp mà KB/s cao → giảm chất lượng; fps thấp và KB/s thấp → nghẽn ở iPhone hoặc Wi‑Fi (thử cắm USB).</small>
+    </label>
+    <label class="check"><input id="setStrip" type="checkbox"> Gõ bỏ dấu tiếng Việt khi dán (Ctrl+V)
+      <small>iPhone không nhận ⌘V từ bàn phím giả lập, nên chữ có dấu được gõ thành không dấu (Nguyễn → Nguyen). Tắt thì chữ có dấu sẽ nạp vào clipboard máy để chạm Paste.</small>
+    </label>
+    <p class="note">Mẹo hiệu năng: cắm USB thay vì Wi‑Fi khi có thể. Trên iPhone đặt TrollVNC <code>Scale 0.5</code> (nhiều máy có thể hạ 0.4) và <code>FPS 30–60</code>.</p>
+    <div class="row">
+      <button value="cancel" formnovalidate>Huỷ</button>
+      <button id="setSave" value="save" class="primary">Lưu</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="wifiDlg">
+  <form method="dialog" id="wifiForm">
+    <h3>Thêm máy qua Wi‑Fi</h3>
+    <label>IP hoặc IP:cổng (mỗi dòng một máy)
+      <textarea id="wifiAddr" rows="4" placeholder="192.168.1.23&#10;192.168.1.24:5901"></textarea>
+    </label>
+    <div class="row">
+      <button value="cancel" formnovalidate>Huỷ</button>
+      <button value="ok" class="primary">Thêm</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

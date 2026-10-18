@@ -1,0 +1,213 @@
+diff --git a/Makefile b/Makefile
+index 27d5f77..a2b7f35 100644
+--- a/Makefile
++++ b/Makefile
+@@ -28,6 +28,7 @@ trollvncserver_FILES += src/ClipboardManager.mm
+ trollvncserver_FILES += src/ScreenCapturer.mm
+ trollvncserver_FILES += src/STHIDEventGenerator.mm
+ trollvncserver_FILES += src/OhMyJetsam.mm
++trollvncserver_FILES += src/H264Streamer.mm
+ 
+ trollvncserver_CFLAGS += -fobjc-arc
+ trollvncserver_CFLAGS += -Wno-unknown-warning-option
+@@ -82,6 +83,7 @@ trollvncserver_FRAMEWORKS += IOSurface
+ trollvncserver_FRAMEWORKS += QuartzCore
+ trollvncserver_FRAMEWORKS += UIKit
+ trollvncserver_FRAMEWORKS += UserNotifications
++trollvncserver_FRAMEWORKS += VideoToolbox
+ 
+ trollvncserver_PRIVATE_FRAMEWORKS += FrontBoardServices
+ 
+diff --git a/src/trollvncserver.mm b/src/trollvncserver.mm
+index 988a079..b4b5873 100644
+--- a/src/trollvncserver.mm
++++ b/src/trollvncserver.mm
+@@ -52,6 +52,7 @@
+ #import "PSAssistiveTouchSettingsDetail.h"
+ #import "STHIDEventGenerator.h"
+ #import "ScreenCapturer.h"
++#import "H264Streamer.h"
+ 
+ #define LocalizedString(key, comment, bundle, table)                                                                   \
+     (NSLocalizedStringFromTableInBundle((key), (table), (bundle), (comment)) ?: (key))
+@@ -76,6 +77,8 @@ static BOOL gClipboardEnabled = YES;
+ static BOOL gIsDaemonMode = NO; // set when launched with -daemon
+ 
+ static double gScale = 1.0; // 0 < scale <= 1.0, 1.0 = no scaling
++static int gH264Port = -1;       // iOSView H.264 stream port (-1 = VNC port + 10, 0 = off)
++static int gH264BitrateKbps = 0; // 0 = default
+ // Preferred frame rate range (0 = unspecified)
+ static int gFpsMin = 0;
+ static int gFpsPref = 0;
+@@ -492,6 +495,16 @@ static void parseDaemonOptions(void) {
+         }
+     }
+ 
++    NSNumber *h264PortN = [prefs objectForKey:@"H264Port"];
++    if ([h264PortN isKindOfClass:[NSNumber class]] || [h264PortN isKindOfClass:[NSString class]]) {
++        int v = h264PortN.intValue;
++        gH264Port = (v == 0 || (v >= 1024 && v <= 65535)) ? v : -1;
++    }
++    NSNumber *h264BrN = [prefs objectForKey:@"H264BitrateKbps"];
++    if ([h264BrN isKindOfClass:[NSNumber class]] || [h264BrN isKindOfClass:[NSString class]]) {
++        gH264BitrateKbps = h264BrN.intValue;
++    }
++
+     NSNumber *keepAliveN = [prefs objectForKey:@"KeepAliveSec"];
+     if ([keepAliveN isKindOfClass:[NSNumber class]]) {
+         double v = keepAliveN.doubleValue;
+@@ -1406,6 +1419,10 @@ static void parseCLI(int argc, const char *argv[]) {
+ 
+ static rfbScreenInfoPtr gScreen = NULL;
+ static void (^gFrameHandler)(CMSampleBufferRef) = nil;
++// Clients that actually want VNC pixels. iOSView keeps a control-only VNC
++// connection (1x1 requests) and watches over H.264, so while this is 0 the
++// CPU scale/copy path for VNC is skipped entirely.
++static std::atomic<int> gPixelClients(0);
+ 
+ static int gWidth = 0;
+ static int gHeight = 0;
+@@ -2116,6 +2133,7 @@ typedef struct {
+     BOOL wheelFlushScheduled;          // whether a flush is pending for this client
+     BOOL isRepeaterClient;             // whether this client is a repeater
+     char clientId8[CLIENT_ID_LEN + 1]; // cached 8-char client id (NUL-terminated)
++    BOOL isPixelClient;                // requested a real screen region (not just 1x1 polling)
+ #if DEBUG
+     uint64_t updateStartNs;
+     uint64_t updateStartCpuNs;
+@@ -3092,12 +3110,36 @@ static BOOL gIsClipboardStarted = NO;
+ static BOOL gRestoreAssist = NO;
+ #endif
+ 
++// Main thread only. Single place that starts/stops capture so VNC (listener/client
++// threads) and H.264 (gNetQ) population changes cannot race each other.
++static void tvSyncCaptureState(void) {
++    BOOL want = (gClientCount > 0 || TVH264ClientCount() > 0) && gFrameHandler != nil;
++    if (want && !gIsCaptureStarted) {
++        gIsCaptureStarted = YES;
++        [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
++        [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
++        TVLog(@"Screen capture started (vnc=%d, h264=%d).", gClientCount, TVH264ClientCount());
++    } else if (!want && gIsCaptureStarted) {
++        [[ScreenCapturer sharedCapturer] endCapture];
++        gIsCaptureStarted = NO;
++        TVLog(@"No clients remaining; screen capture stopped.");
++    }
++}
++
++static void tvScheduleSyncCaptureState(void) {
++    dispatch_async(dispatch_get_main_queue(), ^{
++        tvSyncCaptureState();
++    });
++}
++
+ static void clientGoneHook(rfbClientPtr cl) {
+     // Free per-client state
+     TVClientState *st = tvGetClientState(cl);
+     BOOL isRepeaterClient = NO;
+     NSString *removeKey = nil;
+     if (st) {
++        if (st->isPixelClient)
++            gPixelClients.fetch_sub(1);
+         isRepeaterClient = st->isRepeaterClient;
+         if (st->clientId8[0] != '\0') {
+             removeKey = [NSString stringWithUTF8String:st->clientId8];
+@@ -3122,11 +3164,7 @@ static void clientGoneHook(rfbClientPtr cl) {
+     NSString *host = (cl && cl->host) ? [NSString stringWithUTF8String:cl->host] : @"";
+     TVLog(@"Client %@ disconnected, active clients=%d", host, gClientCount);
+ 
+-    if (gIsCaptureStarted && gClientCount == 0) {
+-        [[ScreenCapturer sharedCapturer] endCapture];
+-        gIsCaptureStarted = NO;
+-        TVLog(@"No clients remaining; screen capture stopped.");
+-    }
++    tvScheduleSyncCaptureState();
+ 
+     if (gIsClipboardStarted && gClientCount == 0) {
+         [[ClipboardManager sharedManager] stop];
+@@ -3166,8 +3204,24 @@ static void clientGoneHook(rfbClientPtr cl) {
+     }
+ }
+ 
++static void tvFramebufferUpdateRequestHook(rfbClientPtr cl, rfbFramebufferUpdateRequestMsg *fur) {
++    if ((int)fur->w * (int)fur->h < 1024)
++        return; // tiny polling request (e.g. iOSView control connection)
++    TVClientState *st = tvGetClientState(cl);
++    if (!st || st->isPixelClient)
++        return;
++    st->isPixelClient = YES;
++    if (gPixelClients.fetch_add(1) == 0) {
++        // VNC path was idle: make sure the next tick produces a fresh frame.
++        dispatch_async(dispatch_get_main_queue(), ^{
++            [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
++        });
++    }
++}
++
+ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
+     cl->clientGoneHook = clientGoneHook;
++    cl->clientFramebufferUpdateRequestHook = tvFramebufferUpdateRequestHook;
+     if (!cl->viewOnly && gViewOnly)
+         cl->viewOnly = TRUE;
+ 
+@@ -3220,12 +3274,8 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
+     // Notify client connected
+     tvPublishClientConnectedNotif(host);
+ 
+-    if (!gIsCaptureStarted && gClientCount > 0 && gFrameHandler) {
+-        // Start capture when entering non-zero client population.
+-        gIsCaptureStarted = YES;
+-        [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
+-        TVLog(@"Screen capture started (clients=%d).", gClientCount);
+-    }
++    // Start capture when entering non-zero client population (decided on main).
++    tvScheduleSyncCaptureState();
+ 
+     if (gClipboardEnabled && !gIsClipboardStarted && gClientCount > 0) {
+         gIsClipboardStarted = YES;
+@@ -3485,10 +3535,36 @@ static void prepareScreenCapturer(void) {
+     }
+ 
+     gFrameHandler = ^(CMSampleBufferRef _Nonnull sampleBuffer) {
+-        handleFramebuffer(sampleBuffer);
++        TVH264PushFrame(sampleBuffer);
++        if (gPixelClients.load() > 0) {
++            handleFramebuffer(sampleBuffer);
++        } else {
++            // No VNC viewer wants pixels: only keep geometry (rotation) current.
++            int rotQ = (gOrientationSyncEnabled ? gRotationQuad.load(std::memory_order_relaxed) : 0) & 3;
++            maybeResizeFramebufferForRotation(rotQ);
++        }
+     };
+ }
+ 
++static int tvH264Rotation(void) {
++    return (gOrientationSyncEnabled ? gRotationQuad.load(std::memory_order_relaxed) : 0) & 3;
++}
++
++static void setupH264Streamer(void) {
++    int port = gH264Port < 0 ? (gPort > 0 ? gPort + 10 : 0) : gH264Port;
++    if (port <= 0)
++        return;
++    int fps = gFpsMax > 0 ? gFpsMax : (gFpsPref > 0 ? gFpsPref : 60);
++    TVH264Configure(port, gH264BitrateKbps, fps, tvH264Rotation, ^(int n) {
++        // main thread
++        (void)n;
++        tvSyncCaptureState();
++        if (TVH264ClientCount() > 0)
++            [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
++    });
++    TVH264Start();
++}
++
+ static void prepareBulletinManager(void) {
+     BulletinManager *mgr = [BulletinManager sharedManager];
+     [mgr revokeSingleNotification];
+@@ -4205,6 +4281,7 @@ int main(int argc, const char *argv[]) {
+         prepareBulletinManager();
+         prepareClipboardManager();
+         prepareScreenCapturer();
++        setupH264Streamer();
+ 
+         initializeAndRunRfbServer();
+ 

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Cấu hình TrollVNC dựng sẵn cho iOSView (triển khai hàng loạt).
+  Đặt file này vào repo TrollVNC tại: prefs/TrollVNCPrefs/Resources/Managed.plist
+  rồi chạy workflow "Build TrollVNC" (KHÔNG tick is_managed).
+  Muốn đặt mật khẩu: bỏ comment khối FullPassword và nhập cùng mật khẩu vào ⚙ của iOSView.
+-->
+<plist version="1.0">
+<dict>
+  <key>Enabled</key>                <true/>
+  <key>DesktopName</key>            <string>iPhone</string>
+  <key>Port</key>                   <integer>5901</integer>
+  <!--
+  <key>FullPassword</key>           <string>matkhau1</string>
+  -->
+  <key>ClipboardEnabled</key>       <true/>
+  <key>ViewOnly</key>               <false/>
+  <key>SingleNotifEnabled</key>     <false/>
+  <key>ClientNotifsEnabled</key>    <false/>
+  <key>KeepAliveSec</key>           <integer>30</integer>
+  <key>Scale</key>                  <real>0.5</real>
+  <key>FrameRateSpec</key>          <string>30-60</string>
+  <!-- iOSView: luồng H.264 nén phần cứng (cổng = Port + 10). 0 = tắt -->
+  <key>H264Port</key>               <integer>5911</integer>
+  <key>H264BitrateKbps</key>        <integer>2500</integer>
+  <key>OrientationSync</key>        <true/>
+  <key>NaturalScroll</key>          <false/>
+  <key>ModifierMap</key>            <string>std</string>
+  <key>AutoAssistEnabled</key>      <false/>
+  <key>ServerCursor</key>           <false/>
+  <key>WheelStepPx</key>            <integer>48</integer>
+  <key>HttpPort</key>               <integer>0</integer>
+  <key>BonjourEnabled</key>         <true/>
+  <key>KeyLogging</key>             <false/>
+  <!-- Thử tự mở lại TrollVNC sau khi khởi động máy (bản TrollStore); nếu không được vẫn mở app bằng tay -->
+  <key>LaunchAtLogin</key>          <true/>
+</dict>
+</plist>
