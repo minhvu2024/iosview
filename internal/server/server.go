@@ -25,16 +25,33 @@ import (
 type Server struct {
 	M   *device.Manager
 	Web fs.FS
+	// ShotDir is where screenshots are saved ("" = screenshots disabled).
+	ShotDir string
+	// Version is shown in the UI so the running build is easy to tell apart.
+	Version string
 }
 
 // Handler returns the root HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServer(http.FS(s.Web)))
+	// The UI is embedded in the exe: never let the window reuse files cached
+	// from an older build.
+	static := http.FileServer(http.FS(s.Web))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		static.ServeHTTP(w, r)
+	}))
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": s.Version})
+	})
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.M.Snapshot())
 	})
+	mux.HandleFunc("/api/shot", s.shot)
+	mux.HandleFunc("/api/ui", s.uiPrefs)
 	mux.HandleFunc("/ws/control", s.control)
 	mux.HandleFunc("/ws/vnc/", s.vncProxy)
 	mux.HandleFunc("/ws/h264/", s.h264Proxy)
@@ -222,12 +239,16 @@ type msg struct {
 	On    bool     `json:"on,omitempty"`
 	IDs   []string `json:"ids,omitempty"`
 	Name  string   `json:"name,omitempty"`
+	Old   string   `json:"old,omitempty"`
+	No    int      `json:"no,omitempty"`
 	Pw    string   `json:"pw,omitempty"`
 	Q     int      `json:"q,omitempty"`
 	FQ    int      `json:"fq,omitempty"`
 	Port  int      `json:"port,omitempty"`
 	Strip bool     `json:"strip"`
 	Seq   int      `json:"seq,omitempty"`
+	One   bool     `json:"one,omitempty"` // only device D, ignore the sync group (Alt held)
+	F     bool     `json:"f,omitempty"`   // text: force typing (dán cưỡng bức)
 }
 
 func (s *Server) control(w http.ResponseWriter, r *http.Request) {
@@ -301,6 +322,32 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	}()
 	sendState()
 
+	// Devices this window is currently pressing on. If the window goes away
+	// mid-drag (reload, crash, closed), the release would never come: lift
+	// them so no phone is left with a finger down.
+	type press struct {
+		x, y float64
+		one  bool
+	}
+	held := map[string]press{}
+	defer func() {
+		for id, p := range held {
+			ev := device.Pointer(p.x, p.y, 0)
+			if p.one {
+				s.M.DispatchOne(id, ev)
+			} else {
+				s.M.Dispatch(id, ev)
+			}
+		}
+	}()
+	// dispatch honours Alt (individual control): only the device acted on.
+	dispatch := func(m *msg, ev device.Event) int {
+		if m.One {
+			return s.M.DispatchOne(m.D, ev)
+		}
+		return s.M.Dispatch(m.D, ev)
+	}
+
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
@@ -312,14 +359,23 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		}
 		switch m.T {
 		case "p":
-			s.M.Dispatch(m.D, device.Pointer(m.X, m.Y, m.M))
+			dispatch(&m, device.Pointer(m.X, m.Y, m.M))
+			if m.M != 0 {
+				held[m.D] = press{m.X, m.Y, m.One}
+			} else {
+				delete(held, m.D)
+			}
 		case "k":
-			s.M.Dispatch(m.D, device.Key(m.K, m.Down))
+			dispatch(&m, device.Key(m.K, m.Down))
 		case "text":
-			n := s.M.Dispatch(m.D, device.Text(m.S))
+			ev := device.Text(m.S)
+			if m.F {
+				ev = device.ForceText(m.S)
+			}
+			n := dispatch(&m, ev)
 			push(map[string]any{"t": "toast", "s": textToast(n)})
 		case "btn":
-			s.M.Dispatch(m.D, device.Button(m.B))
+			dispatch(&m, device.Button(m.B))
 		case "sync":
 			s.M.SetSync(m.On)
 		case "h264":
@@ -328,6 +384,14 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 			s.M.SetInSync(m.IDs, m.On)
 		case "rename":
 			s.M.Rename(m.D, m.Name)
+		case "number":
+			if !s.M.SetNumber(m.D, m.No) {
+				push(map[string]any{"t": "toast", "s": "Số máy phải từ 1 đến 999"})
+			}
+		case "tag":
+			s.M.SetTag(m.Name, m.IDs, m.Old)
+		case "tagdel":
+			s.M.DeleteTag(m.Name)
 		case "addwifi":
 			s.M.AddWifi(m.S)
 		case "remove":
@@ -359,4 +423,37 @@ func textToast(n int) string {
 func itoa(n int) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+// uiPrefs stores the window's own data (shortcuts, quick phrases, notes) in
+// iosview.json. GET returns it, PUT replaces it (JSON object, max 1 MiB).
+func (s *Server) uiPrefs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(s.M.UIPrefs())
+	case http.MethodPut:
+		// Same-origin UI only (blocks other pages from overwriting notes).
+		if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			http.Error(w, "need application/json", http.StatusUnsupportedMediaType)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
+		if err != nil || len(body) > 1<<20 {
+			http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if err := s.M.SetUIPrefs(body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "GET or PUT", http.StatusMethodNotAllowed)
+	}
 }

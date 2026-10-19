@@ -5,3 +5,5 @@ iosview.json
 iosview*.exe
 iosview.log
 *.log
+screenshots/
+.stage/

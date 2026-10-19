@@ -24,8 +24,12 @@ type Config struct {
 	WifiDevices []string `json:"wifiDevices"`
 	// WifiLinks maps a Wi-Fi address to the UDID of the same phone, so one
 	// phone seen over cable + Wi-Fi is a single device (cable preferred).
-	WifiLinks map[string]string   `json:"wifiLinks,omitempty"`
-	Names     map[string]string   `json:"names"`
+	WifiLinks map[string]string `json:"wifiLinks,omitempty"`
+	Names     map[string]string `json:"names"`
+	// Numbers: stable display number per device (01, 02 …), kept across runs.
+	Numbers map[string]int `json:"numbers,omitempty"`
+	// Tags: named groups of devices for one-click selection.
+	Tags      []Tag               `json:"tags,omitempty"`
 	SyncOn    bool                `json:"syncOn"`
 	SyncGroup map[string]struct{} `json:"syncGroup"`
 	Known     map[string]bool     `json:"known"` // devices seen before (new ones auto-join the sync group)
@@ -33,9 +37,18 @@ type Config struct {
 	// the device clipboard (iOS ignores ⌘V from injected keyboards). Pointer so
 	// an absent key in an old config defaults to true.
 	StripAccents bool `json:"stripAccents"`
+	// UI: the window's own data (custom shortcuts, quick phrases, notes),
+	// stored as-is so it survives reinstalls of the window.
+	UI json.RawMessage `json:"ui,omitempty"`
 
 	path string
 	mu   sync.Mutex
+}
+
+// Tag is a named group of device IDs.
+type Tag struct {
+	Name string   `json:"name"`
+	IDs  []string `json:"ids"`
 }
 
 // LoadConfig reads the config (or returns defaults if absent).
@@ -47,7 +60,7 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 	} else if os.IsNotExist(err) {
-		c.StreamVer = 2 // fresh config already has the v2 defaults
+		c.StreamVer = 3 // fresh config already has the current defaults
 	} else {
 		return nil, err
 	}
@@ -58,6 +71,17 @@ func LoadConfig(path string) (*Config, error) {
 			c.Quality = 5
 		}
 		c.StreamVer = 2
+	}
+	// v3: 0.10.3 could drag the quality sliders down by accident (wheel over
+	// the panel): bring very low values back to the defaults once.
+	if c.StreamVer < 3 {
+		if c.Quality < 3 {
+			c.Quality = 5
+		}
+		if c.FocusQuality < 6 {
+			c.FocusQuality = 7
+		}
+		c.StreamVer = 3
 	}
 	if c.FocusQuality <= 0 || c.FocusQuality > 9 {
 		c.FocusQuality = 7
@@ -70,6 +94,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.SyncGroup == nil {
 		c.SyncGroup = map[string]struct{}{}
+	}
+	if c.Numbers == nil {
+		c.Numbers = map[string]int{}
 	}
 	if c.WifiLinks == nil {
 		c.WifiLinks = map[string]string{}

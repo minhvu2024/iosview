@@ -1,9 +1,10 @@
 // iosview — view and control many jailbroken iPhones (TrollVNC) at once,
 // with synchronised input across a group of phones.
 //
-// On Windows it is built as a GUI app (no console window): it opens the UI
-// in an Edge/Chrome app window and exits a few seconds after that window is
-// closed. Logs go to iosview.log next to the executable.
+// On Windows it is built as a GUI app (no console window): the UI runs in its
+// own native window (WebView2, the engine built into Windows 10/11) and the
+// program exits when that window is closed. Without WebView2 it falls back to
+// an Edge/Chrome app window. Logs go to iosview.log next to the executable.
 package main
 
 import (
@@ -57,7 +58,9 @@ func main() {
 		// Already running? Just bring up another window on it.
 		if c, e := http.Get(url + "/api/state"); e == nil {
 			c.Body.Close()
-			openBrowser(url)
+			if !runWindow(url, version) {
+				openBrowser(url)
+			}
 			return
 		}
 		log.Fatalf("không mở được %s: %v", cfg.Listen, err)
@@ -68,17 +71,27 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := &server.Server{M: m, Web: dist}
-	if !*noBrowser {
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-			openBrowser(url)
-		}()
+	srv := &server.Server{M: m, Web: dist, ShotDir: filepath.Join(dir, "screenshots"), Version: version}
+	if *noBrowser {
+		log.Fatal(http.Serve(ln, srv.Handler()))
 	}
-	if !*noBrowser && !*keepAlive {
-		go exitWhenWindowClosed(m)
+	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
+
+	// Native window first: it blocks until the user closes it.
+	if runWindow(url, version) {
+		if *keepAlive {
+			select {}
+		}
+		log.Printf("window closed — exiting")
+		return
 	}
-	log.Fatal(http.Serve(ln, srv.Handler()))
+	// No WebView2 runtime: browser app window, exit when it disconnects.
+	time.Sleep(200 * time.Millisecond)
+	openBrowser(url)
+	if *keepAlive {
+		select {}
+	}
+	exitWhenWindowClosed(m)
 }
 
 // exitWhenWindowClosed stops the program once no UI window has been connected

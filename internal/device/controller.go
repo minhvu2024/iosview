@@ -25,6 +25,7 @@ type Event struct {
 	Down   bool
 	Text   string
 	Button string
+	Force  bool // evText: always type it (accents stripped), whatever the setting
 }
 
 // Hardware button keysyms / masks understood by TrollVNC.
@@ -59,8 +60,13 @@ func toPx(n float64, size int) int {
 // runWriter drains the event queue for one device. Consecutive pointer moves
 // with the same button mask are coalesced into the newest one when the
 // device falls behind, so latency never accumulates; presses, releases and
-// keys are never dropped.
+// keys are never dropped. Only one writer runs per device (see d.owner).
 func (d *Device) runWriter(c *rfb.Client) {
+	// The previous session may have ended with a finger (or Home/Power) still
+	// down: its release never reached the phone. Lift it before anything else.
+	if d.held.mask != 0 && c.PointerEvent(0, d.held.x, d.held.y) == nil {
+		d.held.mask = 0
+	}
 	for {
 		select {
 		case <-c.Done():
@@ -91,16 +97,26 @@ func (d *Device) flush(c *rfb.Client, batch []Event) {
 		}
 	}
 	for i, ev := range batch {
+		select {
+		case <-c.Done():
+			return // session gone: the rest is stale
+		default:
+		}
 		switch ev.Kind {
 		case evPointer:
-			// Skip a move if the next event is also a move with the same mask.
-			if i+1 < len(batch) {
+			// Skip a pure move (mask unchanged) when the next event is another
+			// move with the same mask. Press/release events are always sent at
+			// their own position, so a drag starts exactly where the finger
+			// went down (matters for edge swipes).
+			if ev.Mask == d.held.mask && i+1 < len(batch) {
 				n := batch[i+1]
 				if n.Kind == evPointer && n.Mask == ev.Mask {
 					continue
 				}
 			}
-			ptr = append(ptr, [3]int{int(ev.Mask), toPx(ev.X, w), toPx(ev.Y, h)})
+			x, y := toPx(ev.X, w), toPx(ev.Y, h)
+			ptr = append(ptr, [3]int{int(ev.Mask), x, y})
+			*d.held = ptrState{ev.Mask, x, y}
 		case evKey:
 			flushPtr()
 			_ = c.KeyEvent(ev.Keysym, ev.Down)
@@ -112,7 +128,7 @@ func (d *Device) flush(c *rfb.Client, batch []Event) {
 			}
 		case evText:
 			flushPtr()
-			d.typeText(c, ev.Text)
+			d.typeText(c, ev.Text, ev.Force)
 		case evButton:
 			flushPtr()
 			d.pressButton(c, ev.Button, w, h)

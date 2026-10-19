@@ -108,13 +108,16 @@ func stripAccents(s string) (string, bool) {
 // key (no clipboard, no ⌘V — iOS ignores ⌘ shortcuts from injected keyboards).
 // Non-ASCII text is either transliterated (StripAccents) or, if that option is
 // off, put on the device clipboard for a manual tap on Paste.
-func (d *Device) typeText(c *rfb.Client, s string) {
+//
+// force ("dán cưỡng bức") always types, stripping accents, for fields that
+// ignore the clipboard.
+func (d *Device) typeText(c *rfb.Client, s string, force bool) {
 	if s == "" {
 		return
 	}
 	if !allTypeable(s) {
 		d.m.mu.Lock()
-		strip := d.m.cfg.StripAccents
+		strip := d.m.cfg.StripAccents || force
 		d.m.mu.Unlock()
 		if strip {
 			s, _ = stripAccents(s)
@@ -126,6 +129,11 @@ func (d *Device) typeText(c *rfb.Client, s string) {
 		}
 	}
 	for _, r := range s {
+		select {
+		case <-c.Done():
+			return // session gone: don't keep typing into a dead connection
+		default:
+		}
 		typeRune(c, r)
 		time.Sleep(keyGap)
 	}

@@ -157,3 +157,42 @@ func TestProbeIdent(t *testing.T) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 }
+
+// Quality values dragged to the floor by 0.10.3 are brought back once.
+func TestConfigV3RaisesLowQuality(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.json")
+	if err := os.WriteFile(path, []byte(`{"quality":0,"focusQuality":4,"streamVer":2}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Quality != 5 || c.FocusQuality != 7 || c.StreamVer != 3 {
+		t.Fatalf("got q=%d fq=%d v=%d", c.Quality, c.FocusQuality, c.StreamVer)
+	}
+	// already migrated: the user's own low choice stays
+	os.WriteFile(path, []byte(`{"quality":1,"focusQuality":4,"streamVer":3}`), 0o644)
+	c, _ = LoadConfig(path)
+	if c.Quality != 1 || c.FocusQuality != 4 {
+		t.Fatalf("v3 config changed: q=%d fq=%d", c.Quality, c.FocusQuality)
+	}
+}
+
+// A linked phone that got a new IP (seen through usbmuxd Wi-Fi sync) is
+// dialed at the new address from then on.
+func TestNetworkEntryUpdatesChangedIP(t *testing.T) {
+	m, path := newTestManager(t)
+	m.AddWifi("10.1.2.3:1")
+	m.onUSB(usbmux.Event{Attached: true, Device: usbmux.Device{DeviceID: 3, SerialNumber: "U2", ConnectionType: "Network", NetAddr: "10.1.2.3"}})
+	m.onUSB(usbmux.Event{Attached: false, Device: usbmux.Device{DeviceID: 3}})
+	m.onUSB(usbmux.Event{Attached: true, Device: usbmux.Device{DeviceID: 4, SerialNumber: "U2", ConnectionType: "Network", NetAddr: "10.1.2.99"}})
+	if got := ids(m); len(got) != 1 || got["usb:U2"].Wifi != "10.1.2.99:1" {
+		t.Fatalf("got %v", got)
+	}
+	m.save()
+	cfg, _ := LoadConfig(path)
+	if len(cfg.WifiDevices) != 1 || cfg.WifiDevices[0] != "10.1.2.99:1" || cfg.WifiLinks["10.1.2.99:1"] != "U2" || cfg.WifiLinks["10.1.2.3:1"] != "" {
+		t.Fatalf("config not updated: %v %v", cfg.WifiDevices, cfg.WifiLinks)
+	}
+}

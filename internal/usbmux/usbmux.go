@@ -44,6 +44,9 @@ func ipFromSockaddr(b []byte) string {
 
 var tagCounter uint32
 
+// ErrPortClosed: the phone is reachable but nothing listens on that port.
+var ErrPortClosed = errors.New("port closed")
+
 // Address returns the usbmuxd endpoint as (network, address).
 // USBMUXD_SOCKET_ADDRESS can override it ("UNIX:/path" or "host:port").
 func Address() (string, string) {
@@ -226,7 +229,7 @@ func Connect(deviceID int64, port uint16) (net.Conn, error) {
 		case 2:
 			return nil, fmt.Errorf("thiết bị chưa sẵn sàng/không tìm thấy (usbmux=%d)", n)
 		case 3:
-			return nil, fmt.Errorf("cổng %d trên iPhone đang đóng — TrollVNC đã chạy chưa? (usbmux=%d)", port, n)
+			return nil, fmt.Errorf("cổng %d trên iPhone đang đóng — TrollVNC đã chạy chưa? (usbmux=%d): %w", port, n, ErrPortClosed)
 		}
 		return nil, fmt.Errorf("usbmux Connect lỗi %d", n)
 	}

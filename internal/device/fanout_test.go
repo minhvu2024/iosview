@@ -15,12 +15,13 @@ import (
 
 // fakeVNC is a tiny RFB 3.8 server (security None) that records input.
 type fakeVNC struct {
-	ln   net.Listener
-	w, h uint16
-	mu   sync.Mutex
-	ptr  [][3]int
-	keys []uint32
-	clip []string
+	ln    net.Listener
+	w, h  uint16
+	mu    sync.Mutex
+	ptr   [][3]int
+	keys  []uint32
+	clip  []string
+	conns int
 }
 
 func newFakeVNC(t *testing.T, w, h uint16) *fakeVNC {
@@ -43,13 +44,16 @@ func newFakeVNC(t *testing.T, w, h uint16) *fakeVNC {
 
 func (f *fakeVNC) serve(c net.Conn) {
 	defer c.Close()
+	f.mu.Lock()
+	f.conns++
+	f.mu.Unlock()
 	r := bufio.NewReader(c)
 	c.Write([]byte("RFB 003.008\n"))
 	io.ReadFull(r, make([]byte, 12))
 	c.Write([]byte{1, 1}) // one type: None
 	r.ReadByte()
 	c.Write([]byte{0, 0, 0, 0}) // ok
-	r.ReadByte()                 // shared flag
+	r.ReadByte()                // shared flag
 	si := make([]byte, 24)
 	binary.BigEndian.PutUint16(si[0:], f.w)
 	binary.BigEndian.PutUint16(si[2:], f.h)
@@ -149,6 +153,7 @@ func TestSyncFanout(t *testing.T) {
 	b := newFakeVNC(t, 828, 1792)
 	c := newFakeVNC(t, 750, 1334)
 	cfg, _ := LoadConfig(filepath.Join(t.TempDir(), "c.json"))
+	cfg.StripAccents = false // non-ASCII text goes to the device clipboard
 	cfg.WifiDevices = []string{a.ln.Addr().String(), b.ln.Addr().String(), c.ln.Addr().String()}
 	m := NewManager(cfg)
 	waitOnline(t, m, 3)
