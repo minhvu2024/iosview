@@ -17,15 +17,15 @@ Ký hiệu cột **iOSView**: ✅ đã làm · ⚠️ làm khác bản gốc (xe
 | Điều khiển riêng lẻ từng điện thoại | Giữ `Alt` | ✅ | Giữ Alt khi chạm / gõ / bấm nút: chỉ máy đang trỏ nhận lệnh, cả khi đang đồng bộ. |
 | Điều khiển bằng hai ngón tay | Giữ `Shift` | ❌ | TrollVNC (giao thức VNC) chỉ có **một** điểm chạm, chưa giả lập được hai ngón. |
 | Chuyển đổi nhanh màn hình lớn | `Ctrl + phím mũi tên` | ✅ | ←/↑ máy trước, →/↓ máy sau. Màn lớn đang đóng thì mở màn lớn cho máy đang trỏ. |
-| Đóng màn hình lớn | Nhấp phải vào chỗ trống | ✅ | Chỗ trống trong lưới hoặc quanh màn lớn. Nút **✕ Đóng** vẫn còn. |
+| Mở màn hình lớn | Nút ⤢ trên ô máy, hoặc nhấp đúp thanh tên | ✅ | Hoặc bật `Ctrl + S` rồi nhấp màn nhỏ. Nhấp đúp vào **hình** không mở màn lớn (lần nhấp đầu là chạm thật, hay mở nhầm app). |
+| Đóng màn hình lớn | Nhấp phải ra ngoài màn lớn | ✅ | Chỗ trống trong lưới hoặc quanh màn lớn (nhấp phải **trên** màn lớn vẫn là Quay lại). Nút **✕** và ô "Đang ở màn lớn" vẫn dùng được. |
 
 ### Phím tắt đổi được (Cài đặt → Phím tắt…)
 
 | Chức năng | Mặc định | iOSView | Ghi chú |
 |---|---|---|---|
-| Điều khiển màn hình nhỏ | `Ctrl + S` | ✅ | Bật/tắt chạm trực tiếp trên màn nhỏ. Tắt: nhấp màn nhỏ = mở máy đó lên màn lớn, lăn chuột = cuộn lưới. |
 | Dán cưỡng bức | `Ctrl + D` | ✅ | Luôn **gõ từng phím** nội dung clipboard PC (bỏ dấu), kể cả khi cài đặt đang để “nạp vào clipboard máy”. Dùng cho ô không nhận Paste. |
-| Dán văn bản | `Ctrl + V` | ✅ | Như cũ: theo cài đặt “Bỏ dấu tiếng Việt khi dán”. |
+| Dán văn bản | `Ctrl + V` | ✅ | Theo cài đặt “Bỏ dấu tiếng Việt khi dán”. **Nhiều dòng + chọn ≥ 2 máy** → mỗi máy một dòng theo số máy (song song, không Enter). Trong dòng có thể dùng **Tab** để nhảy ô: `tendangnhap<Tab>matkhau`. |
 | Cụm từ nhanh | `Ctrl + K` | ✅ | Danh sách câu hay dùng; bấm số 1–9 hoặc nhấp để gửi vào máy đang trỏ (cả nhóm khi đồng bộ). |
 | Mở cài đặt | `Ctrl + ,` | ✅ | |
 | Mở ghi chú | `Ctrl + R` | ✅ | Ô ghi chú nổi, tự lưu. *Ctrl+R không còn tải lại cửa sổ (dùng F5).* |
@@ -47,6 +47,7 @@ Phím đã đổi, cụm từ nhanh và ghi chú được lưu trong `iosview.js
 
 | Chức năng | Phím tắt | iOSView | Ghi chú |
 |---|---|---|---|
+| Nhấp màn nhỏ = phóng to | `Ctrl + S` | ✅ | Bật/tắt (công tắc cùng tên ở khối Hiển thị). **Bật:** nhấp màn nhỏ mở máy đó ở màn lớn, nhấp máy khác thì chuyển, chuột phải đóng, lăn chuột cuộn lưới. **Tắt:** nhấp / vuốt màn nhỏ điều khiển máy. |
 | Chọn điện thoại | `Ctrl + nhấn (giữ) chuột trái` | ✅ | Bật/tắt chọn máy đó. Nhấp thanh tên máy vẫn chọn như cũ. |
 | Chọn khung điện thoại | `Ctrl + kéo chuột trái` | ✅ | Kéo khung: chọn thêm mọi máy nằm trong khung. |
 | Mở nhiệm vụ hiện tại | Nhấn và giữ chuột phải | ✅ | |
@@ -64,3 +65,5 @@ Phím đã đổi, cụm từ nhanh và ghi chú được lưu trong `iosview.js
 | Cuộn trên iPhone | Lăn chuột trên màn hình máy |
 | Gõ phím, Enter, Tab, mũi tên… | Gõ khi trỏ chuột vào máy |
 | Tải lại cửa sổ | `F5` |
+
+- **Ctrl+C** (app đang focus, ngoài ô nhập): copy clipboard các iPhone đang chọn, hoặc tất cả máy online nếu không chọn; chỉ lấy dữ liệu theo thứ tự máy trong lưới; công tắc Cài đặt → Dòng trống giữa dữ liệu copy chọn cách ngăn giữa hai dữ liệu. Lỗi/timeout 2 giây để trống. Bản này hỗ trợ TrollVNC.

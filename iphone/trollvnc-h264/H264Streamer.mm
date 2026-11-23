@@ -6,6 +6,7 @@
 #warning This file must be compiled with ARC. Use -fobjc-arc flag.
 #endif
 
+#import <Accelerate/Accelerate.h>
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import <VideoToolbox/VideoToolbox.h>
@@ -55,9 +56,12 @@ static const int kPoolThreshold = 6;
 
 static int gPort = 0;
 static int gBitrateKbps = 2500;
-static int gMaxFps = 60;
+static int gMaxFps = 60;     // current stream frame rate (main thread)
+static int gDefaultFps = 60; // configured rate, restored when no client is left
+static int gScalePct = 100;  // encoded size in % of the screen (main thread)
 static TVH264RotationFn gRotFn = NULL;
 static void (^gClientsChanged)(int) = nil;
+static void (^gFpsChanged)(int) = nil;
 
 // Network state: owned by gNetQ.
 static dispatch_queue_t gNetQ;
@@ -380,9 +384,15 @@ static CVPixelBufferRef copyFrame(CVPixelBufferRef src) {
     const uint8_t *sp = (const uint8_t *)CVPixelBufferGetBaseAddress(src);
     uint8_t *dp = (uint8_t *)CVPixelBufferGetBaseAddress(dst);
     size_t sbpr = CVPixelBufferGetBytesPerRow(src), dbpr = CVPixelBufferGetBytesPerRow(dst);
-    size_t rows = MIN(CVPixelBufferGetHeight(src), CVPixelBufferGetHeight(dst));
-    size_t bytes = MIN(sbpr, dbpr);
-    if (sp && dp) {
+    size_t sw = CVPixelBufferGetWidth(src), sh = CVPixelBufferGetHeight(src);
+    size_t dw = CVPixelBufferGetWidth(dst), dh = CVPixelBufferGetHeight(dst);
+    if (sp && dp && (sw != dw || sh != dh)) {
+        vImage_Buffer s = {.data = (void *)sp, .height = sh, .width = sw, .rowBytes = sbpr};
+        vImage_Buffer d = {.data = dp, .height = dh, .width = dw, .rowBytes = dbpr};
+        vImageScale_ARGB8888(&s, &d, NULL, kvImageNoFlags);
+    } else if (sp && dp) {
+        size_t rows = MIN(sh, dh);
+        size_t bytes = MIN(sbpr, dbpr);
         for (size_t y = 0; y < rows; y++)
             memcpy(dp + y * dbpr, sp + y * sbpr, bytes);
     }
@@ -468,7 +478,15 @@ void TVH264PushFrame(CMSampleBufferRef sampleBuffer) {
     if (!src)
         return;
     int w = (int)CVPixelBufferGetWidth(src), h = (int)CVPixelBufferGetHeight(src);
-    if (w <= 0 || h <= 0 || !ensureSession(w, h))
+    if (w <= 0 || h <= 0)
+        return;
+    if (gScalePct < 100) {
+        // Smaller encode: the copy below scales on the GPU for free, the
+        // encoder then has only a fraction of the pixels to compress.
+        w = MAX(64, w * gScalePct / 100) & ~1;
+        h = MAX(64, h * gScalePct / 100) & ~1;
+    }
+    if (!ensureSession(w, h))
         return;
     CVPixelBufferRef copy = copyFrame(src);
     if (!copy)
@@ -478,15 +496,35 @@ void TVH264PushFrame(CMSampleBufferRef sampleBuffer) {
     pumpEncoder();
 }
 
+// Main thread. fps <= 0 / pct <= 0 = configured defaults. A new size takes
+// effect on the next captured frame (ensureSession rebuilds the encoder and
+// sends a keyframe); fpsChanged also forces that frame on a static screen.
+static void applyProfile(int fps, int pct) {
+    if (fps <= 0)
+        fps = gDefaultFps;
+    if (pct <= 0)
+        pct = 100;
+    if (fps == gMaxFps && pct == gScalePct)
+        return;
+    gMaxFps = fps;
+    gScalePct = pct;
+    if (gSession)
+        VTSessionSetProperty(gSession, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef) @(fps));
+    TVLog(@"H264: profile fps=%d size=%d%%", fps, pct);
+    if (gFpsChanged)
+        gFpsChanged(fps == gDefaultFps ? 0 : fps);
+}
+
 #pragma mark - Network (gNetQ)
 
 static void notifyClients(void) {
     int n = gClientCount.load();
     void (^cb)(int) = gClientsChanged;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (n == 0)
+        if (n == 0) {
             teardownEncoder();
-        else if (gLastPB && !gPendingPB) {
+            applyProfile(0, 0); // next viewer starts from the defaults
+        } else if (gLastPB && !gPendingPB) {
             // Static screen: resend the last frame as a keyframe right away.
             setPB(&gPendingPB, gLastPB);
             pumpEncoder();
@@ -527,6 +565,11 @@ static void sendIdent(TVH264Client *c) {
     });
 }
 
+// Length of a command with arguments (0 = not one).
+static int commandLength(uint8_t c) {
+    return c == 'B' ? 5 : c == 'P' ? 3 : 0;
+}
+
 static void handleClientBytes(TVH264Client *c, const uint8_t *buf, ssize_t n) {
     for (ssize_t i = 0; i < n; i++) {
         if (c->inlen == 0) {
@@ -538,16 +581,25 @@ static void handleClientBytes(TVH264Client *c, const uint8_t *buf, ssize_t n) {
                 sendIdent(c);
                 continue;
             }
-            if (buf[i] != 'B')
+            if (!commandLength(buf[i]))
                 continue; // unknown command byte: ignore
         }
         c->inbuf[c->inlen++] = buf[i];
-        if (c->inlen == 5) {
+        if (c->inlen < commandLength(c->inbuf[0]))
+            continue;
+        c->inlen = 0;
+        if (c->inbuf[0] == 'B') {
             uint32_t kbps = ((uint32_t)c->inbuf[1] << 24) | ((uint32_t)c->inbuf[2] << 16) |
                             ((uint32_t)c->inbuf[3] << 8) | c->inbuf[4];
-            c->inlen = 0;
             if (kbps >= 100 && kbps <= 20000)
                 gNewBitrateKbps.store((int)kbps);
+        } else { // 'P'
+            int fps = c->inbuf[1] & 0x7f, pct = c->inbuf[2] & 0x7f;
+            if (fps < 5 || fps > 60 || pct < 25 || pct > 100)
+                continue;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                applyProfile(fps, pct);
+            });
         }
     }
 }
@@ -626,14 +678,16 @@ static void acceptClients(int lfd) {
 #pragma mark - Public
 
 void TVH264Configure(int port, int bitrateKbps, int maxFps, TVH264RotationFn rotationFn,
-                     void (^clientsChanged)(int clientCount)) {
+                     void (^clientsChanged)(int clientCount), void (^fpsChanged)(int fps)) {
     gPort = port;
     if (bitrateKbps > 0)
         gBitrateKbps = MAX(100, MIN(20000, bitrateKbps));
     if (maxFps > 0)
         gMaxFps = MAX(5, MIN(120, maxFps));
+    gDefaultFps = gMaxFps;
     gRotFn = rotationFn;
     gClientsChanged = [clientsChanged copy];
+    gFpsChanged = [fpsChanged copy];
 }
 
 int TVH264ClientCount(void) {

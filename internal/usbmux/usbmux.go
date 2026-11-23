@@ -236,3 +236,49 @@ func Connect(deviceID int64, port uint16) (net.Conn, error) {
 	_ = c.SetDeadline(time.Time{})
 	return c, nil
 }
+
+// lockdownPort is lockdownd on the phone (always reachable through usbmuxd).
+const lockdownPort = 62078
+
+// ProductVersion asks lockdownd for the iOS version ("17.5.1"). This key is
+// answered without pairing, so it works on a phone that was never trusted.
+func ProductVersion(deviceID int64) (string, error) {
+	c, err := Connect(deviceID, lockdownPort)
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(4 * time.Second))
+	body, err := plist.Marshal(map[string]any{"Label": "iosview", "Request": "GetValue", "Key": "ProductVersion"})
+	if err != nil {
+		return "", err
+	}
+	hdr := make([]byte, 4)
+	binary.BigEndian.PutUint32(hdr, uint32(len(body)))
+	if _, err := c.Write(append(hdr, body...)); err != nil {
+		return "", err
+	}
+	if _, err := io.ReadFull(c, hdr); err != nil {
+		return "", err
+	}
+	n := binary.BigEndian.Uint32(hdr)
+	if n == 0 || n > 1<<20 {
+		return "", fmt.Errorf("lockdown: bad reply length %d", n)
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(c, buf); err != nil {
+		return "", err
+	}
+	v, err := plist.Unmarshal(buf)
+	if err != nil {
+		return "", err
+	}
+	m, _ := v.(map[string]any)
+	if s, _ := m["Value"].(string); s != "" {
+		return s, nil
+	}
+	if e, _ := m["Error"].(string); e != "" {
+		return "", fmt.Errorf("lockdown: %s", e)
+	}
+	return "", errors.New("lockdown: no ProductVersion")
+}

@@ -46,7 +46,9 @@ type Client struct {
 	extClip   bool
 	onResize  func(w, h int)
 	onClip    func(text string)
-	lastSet   string // last text we pushed, to ignore our own echo
+	clipText  string
+	clipKnown bool
+	clipWait  map[chan string]struct{}
 	closed    chan struct{}
 	closeOnce sync.Once
 	err       error
@@ -345,7 +347,6 @@ func (c *Client) SetClipboard(text string) error {
 	}
 	c.mu.Lock()
 	ext := c.extClip
-	c.lastSet = text
 	c.mu.Unlock()
 	if latin1 && !ext {
 		lb := make([]byte, 0, len(text))
@@ -458,6 +459,10 @@ func (c *Client) readLoop(poll time.Duration) {
 				return
 			}
 			n := int(h.Len)
+			if n > 10<<20 || n < -(10<<20) {
+				c.fail(errors.New("clipboard quá dài"))
+				return
+			}
 			if n < 0 {
 				n = -n
 				buf := make([]byte, n)
@@ -532,10 +537,17 @@ func (c *Client) readFBUpdate() error {
 
 func (c *Client) deliverClip(text string) {
 	c.mu.Lock()
+	c.clipText, c.clipKnown = text, true
+	for ch := range c.clipWait {
+		select {
+		case ch <- text:
+		default:
+		}
+	}
 	cb := c.onClip
-	own := text == c.lastSet
 	c.mu.Unlock()
-	if cb != nil && text != "" && !own {
+	// TrollVNC suppresses remote-set echoes; equal local copies are still events.
+	if cb != nil {
 		cb(text)
 	}
 }
@@ -579,14 +591,14 @@ func (c *Client) handleExtClipboard(buf []byte) {
 			return
 		}
 		n := binary.BigEndian.Uint32(sz[:])
-		if n == 0 || n > 10<<20 {
+		if n > 10<<20 {
 			return
 		}
 		data := make([]byte, n)
 		if _, err := io.ReadFull(zr, data); err != nil {
 			return
 		}
-		c.deliverClip(string(bytes.TrimRight(data, "\x00")))
+		c.deliverClip(string(bytes.TrimSuffix(data, []byte{0})))
 	}
 }
 

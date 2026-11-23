@@ -3,8 +3,6 @@ package device
 import (
 	"strings"
 	"time"
-
-	"iosview/internal/rfb"
 )
 
 // Keysyms for keys used while typing.
@@ -18,11 +16,12 @@ const (
 	ksBksp   = 0xFF08
 )
 
-// Pacing. Real key presses last 50–100 ms; iOS drops or merges HID key
-// events that are much shorter, so we hold every key for a while.
+// Pacing. iOS drops or merges HID key events that are too short, so every
+// key is held for a while. 25/20 ms (0.10.15, was 35/25) verified on iPhone
+// 6s/7; go back up if characters get lost.
 const (
-	keyHold  = 35 * time.Millisecond // down → up
-	keyGap   = 25 * time.Millisecond // between keys
+	keyHold  = 25 * time.Millisecond // down → up
+	keyGap   = 20 * time.Millisecond // between keys
 	modGap   = 15 * time.Millisecond // modifier down → key, key up → modifier up
 	fastHold = 18 * time.Millisecond // for long arrow/backspace runs
 )
@@ -111,8 +110,16 @@ func stripAccents(s string) (string, bool) {
 //
 // force ("dán cưỡng bức") always types, stripping accents, for fields that
 // ignore the clipboard.
-func (d *Device) typeText(c *rfb.Client, s string, force bool) {
+func (d *Device) typeText(c session, s string, force bool) {
 	if s == "" {
+		return
+	}
+	// CoreDevice phones paste natively (clipboard + ⌘V): any text, accents
+	// kept, no typing delay. Forced paste still types key by key.
+	if p, ok := c.(paster); ok && !force {
+		if err := p.Paste(strings.ReplaceAll(s, "\r\n", "\n")); err != nil {
+			d.setErr(err.Error())
+		}
 		return
 	}
 	if !allTypeable(s) {
@@ -139,13 +146,13 @@ func (d *Device) typeText(c *rfb.Client, s string, force bool) {
 	}
 }
 
-func tap(c *rfb.Client, ks uint32, hold time.Duration) {
+func tap(c session, ks uint32, hold time.Duration) {
 	_ = c.KeyEvent(ks, true)
 	time.Sleep(hold)
 	_ = c.KeyEvent(ks, false)
 }
 
-func typeRune(c *rfb.Client, r rune) {
+func typeRune(c session, r rune) {
 	switch r {
 	case '\n':
 		tap(c, ksReturn, keyHold)
@@ -178,7 +185,7 @@ func typeRune(c *rfb.Client, r rune) {
 // selectAll selects the whole text of the focused field without ⌘A: move the
 // caret to the very end (Down ×N), then extend the selection to the very
 // start with Shift+Up ×N. Works in single- and multi-line fields.
-func selectAll(c *rfb.Client) {
+func selectAll(c session) {
 	const lines = 24
 	for i := 0; i < lines; i++ {
 		tap(c, ksDown, fastHold)
@@ -197,7 +204,7 @@ func selectAll(c *rfb.Client) {
 
 // clearField deletes the whole content of the focused field: select all,
 // then Backspace.
-func clearField(c *rfb.Client) {
+func clearField(c session) {
 	selectAll(c)
 	time.Sleep(80 * time.Millisecond)
 	tap(c, ksBksp, keyHold)

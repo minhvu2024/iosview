@@ -11,4 +11,6 @@ copyFileSync("src/index.html", "dist/index.html");
 copyFileSync("src/style.css", "dist/style.css");
 copyFileSync("src/icon.svg", "dist/icon.svg");
 copyFileSync("src/icon.png", "dist/icon.png");
+copyFileSync("src/inter.woff2", "dist/inter.woff2");
+for (const n of [20, 40, 48, 64]) copyFileSync(`src/tb-${n}.png`, `dist/tb-${n}.png`);   // title bar logo = .ico frames
 console.log("UI built -> web/dist");

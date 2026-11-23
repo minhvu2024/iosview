@@ -19,6 +19,7 @@ import (
 	"github.com/coder/websocket"
 
 	"iosview/internal/device"
+	"iosview/internal/update"
 )
 
 // Server wires HTTP handlers to the device manager.
@@ -29,6 +30,9 @@ type Server struct {
 	ShotDir string
 	// Version is shown in the UI so the running build is easy to tell apart.
 	Version string
+	// Up checks for / installs internal updates (nil = updates off, e.g. dev build).
+	Up          *update.Updater
+	CopyCommand bool
 }
 
 // Handler returns the root HTTP handler.
@@ -41,6 +45,11 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		static.ServeHTTP(w, r)
 	}))
+	mux.HandleFunc("POST /api/copy", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]string{"text": s.M.CopyClipboards(r.Context(), s.CopyCommand, r.URL.Query().Get("blank") == "1")})
+	})
 	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
@@ -51,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(s.M.Snapshot())
 	})
 	mux.HandleFunc("/api/shot", s.shot)
+	mux.HandleFunc("/api/update", s.update)
 	mux.HandleFunc("/api/ui", s.uiPrefs)
 	mux.HandleFunc("/ws/control", s.control)
 	mux.HandleFunc("/ws/vnc/", s.vncProxy)
@@ -60,10 +70,13 @@ func (s *Server) Handler() http.Handler {
 
 func accept(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
 	// Only the local UI may connect (blocks drive-by pages on other origins).
+	// The Wails build serves the page from http://wails.localhost, so that
+	// origin is allowed too (the request host is always allowed).
 	return websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols:       []string{"binary"},
 		CompressionMode:    websocket.CompressionDisabled,
 		InsecureSkipVerify: false,
+		OriginPatterns:     []string{"wails.localhost"},
 	})
 }
 
@@ -88,6 +101,10 @@ func (s *Server) vncProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws.SetReadLimit(-1)
+	if d.IsCD() {
+		ws.Close(websocket.StatusTryAgainLater, "máy CoreDevice chỉ có luồng HEVC")
+		return
+	}
 	conn, err := d.Dial()
 	if err != nil {
 		ws.Close(websocket.StatusTryAgainLater, trim(err.Error()))
@@ -171,6 +188,19 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.CloseNow()
+	if d.IsCD() { // iOS 17+ without jailbreak: HEVC from the iosview-cd sidecar
+		base := d.CDBase()
+		if base == "" {
+			ws.Close(websocket.StatusTryAgainLater, "chưa kết nối")
+			return
+		}
+		if err := s.cdVideo(r.Context(), ws, base); err != nil {
+			ws.Close(websocket.StatusTryAgainLater, trim(err.Error()))
+			return
+		}
+		ws.Close(websocket.StatusNormalClosure, "")
+		return
+	}
 	conn, err := d.DialH264()
 	if err != nil {
 		ws.Close(websocket.StatusTryAgainLater, trim(err.Error()))
@@ -195,6 +225,9 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 	go func() { <-ctx.Done(); conn.Close() }()
 
 	br := bufio.NewReaderSize(conn, 256*1024)
+	// One buffer reused for every frame: ws.Write is synchronous and does not
+	// keep it, so there is no per-frame allocation (less GC with many phones).
+	var buf []byte
 	for {
 		var hdr [12]byte
 		if _, err := io.ReadFull(br, hdr[:]); err != nil {
@@ -206,7 +239,10 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 			ws.Close(websocket.StatusProtocolError, "bad frame")
 			return
 		}
-		msg := make([]byte, 12+int(n))
+		if cap(buf) < 12+int(n) {
+			buf = make([]byte, 12+int(n)+int(n)/2) // headroom: keyframes vary in size
+		}
+		msg := buf[:12+int(n)]
 		copy(msg, hdr[:])
 		if _, err := io.ReadFull(br, msg[12:]); err != nil {
 			ws.Close(websocket.StatusNormalClosure, "")
@@ -216,6 +252,38 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// update: GET = status (?check=1 checks now), POST = download, swap the exe
+// and restart (the window closes and the new build opens).
+func (s *Server) update(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	if s.Up == nil {
+		_ = json.NewEncoder(w).Encode(update.Status{Current: s.Version, Error: "bản dev không tự cập nhật"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if r.URL.Query().Get("check") == "1" {
+			_ = s.Up.Check(r.Context())
+		}
+	case http.MethodPost:
+		// Same-origin UI only.
+		if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if err := s.Up.Start(); err != nil {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	default:
+		http.Error(w, "GET or POST", http.StatusMethodNotAllowed)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(s.Up.Status())
 }
 
 func trim(s string) string {
@@ -247,12 +315,13 @@ type msg struct {
 	Port  int      `json:"port,omitempty"`
 	Strip bool     `json:"strip"`
 	Seq   int      `json:"seq,omitempty"`
-	One   bool     `json:"one,omitempty"` // only device D, ignore the sync group (Alt held)
-	F     bool     `json:"f,omitempty"`   // text: force typing (dán cưỡng bức)
+	One   bool     `json:"one,omitempty"`   // only device D, ignore the sync group (Alt held)
+	F     bool     `json:"f,omitempty"`     // text: force typing (dán cưỡng bức)
+	Quiet bool     `json:"quiet,omitempty"` // text: the UI shows its own result
 }
 
 func (s *Server) control(w http.ResponseWriter, r *http.Request) {
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled, OriginPatterns: []string{"wails.localhost"}})
 	if err != nil {
 		return
 	}
@@ -373,7 +442,9 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 				ev = device.ForceText(m.S)
 			}
 			n := dispatch(&m, ev)
-			push(map[string]any{"t": "toast", "s": textToast(n)})
+			if !m.Quiet {
+				push(map[string]any{"t": "toast", "s": textToast(n)})
+			}
 		case "btn":
 			dispatch(&m, device.Button(m.B))
 		case "sync":

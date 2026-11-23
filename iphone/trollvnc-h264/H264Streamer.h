@@ -18,6 +18,12 @@
  Client -> server:
    'K'                 request a keyframe
    'B' + u32 BE kbps   set target bitrate (100..20000)
+   'P' + u8 fps|0x80 + u8 pct|0x80
+                       set the stream profile: frame rate (5..60) and encoded
+                       size in percent of the screen (25..100). Both bytes
+                       carry the high bit so an older build, which ignores
+                       unknown command bytes, can never read them as K/B/I.
+                       Reset to the defaults when the last client leaves.
 
  Everything here is best effort: if VideoToolbox is unavailable the stream
  port simply sends nothing and the VNC server keeps working.
@@ -36,8 +42,10 @@ extern "C" {
 typedef int (*TVH264RotationFn)(void);
 
 /// Configure before TVH264Start. bitrateKbps/maxFps <= 0 use defaults.
+/// fpsChanged (main thread) is told the frame rate a client asked for, so the
+/// capture itself can run slower; 0 = back to the configured rate.
 void TVH264Configure(int port, int bitrateKbps, int maxFps, TVH264RotationFn rotationFn,
-                     void (^clientsChanged)(int clientCount));
+                     void (^clientsChanged)(int clientCount), void (^fpsChanged)(int fps));
 
 /// Start listening (no-op if port <= 0). Returns NO if the port can't be bound.
 BOOL TVH264Start(void);

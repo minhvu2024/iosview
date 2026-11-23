@@ -1,0 +1,16 @@
+Origin: iOSView
+Label: iOSView
+Suite: stable
+Version: 1.0
+Codename: ios
+Architectures: iphoneos-arm iphoneos-arm64 iphoneos-arm64e
+Components: main
+Description: TrollVNC ban iOSView (H.264)
+MD5Sum:
+ c86d256c0498749624fc54bbddd6810d 1774 Packages
+ 4e1a6aab26499c65826f18776894f73b 803 Packages.bz2
+ c5f632b4975547d12dbaf3680d2f5e75 667 Packages.gz
+SHA256:
+ e00b8f36b41c6f9b2a300a0edb9038e9ed08fca1ced5eac7a1dc58a95f9da4d4 1774 Packages
+ 8864efd3f39c78ad66b1bb4fea73f6be5bdbbe969350f5343e2b9d657dfbc5ce 803 Packages.bz2
+ b5d6016c8b10a7e2faf5a4b9f88f99be36da2c911a2c1ab40bcd887f843f6d61 667 Packages.gz

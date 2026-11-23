@@ -1,0 +1,6 @@
+/pc/*
+  Cache-Control: no-cache
+/Packages*
+  Cache-Control: no-cache
+/Release
+  Cache-Control: no-cache

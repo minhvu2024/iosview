@@ -1,0 +1,40 @@
+diff --git a/src/trollvncserver.mm b/src/trollvncserver.mm
+index b4b5873..2498c1f 100644
+--- a/src/trollvncserver.mm
++++ b/src/trollvncserver.mm
+@@ -3555,13 +3555,28 @@ static void setupH264Streamer(void) {
+     if (port <= 0)
+         return;
+     int fps = gFpsMax > 0 ? gFpsMax : (gFpsPref > 0 ? gFpsPref : 60);
+-    TVH264Configure(port, gH264BitrateKbps, fps, tvH264Rotation, ^(int n) {
+-        // main thread
+-        (void)n;
+-        tvSyncCaptureState();
+-        if (TVH264ClientCount() > 0)
+-            [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
+-    });
++    TVH264Configure(
++        port, gH264BitrateKbps, fps, tvH264Rotation,
++        ^(int n) {
++            // main thread
++            (void)n;
++            tvSyncCaptureState();
++            if (TVH264ClientCount() > 0)
++                [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
++        },
++        ^(int want) {
++            // main thread: iOSView asked for another frame rate. Capture at the
++            // smallest rate the 60 Hz display can tick evenly that still covers
++            // it (45 -> 60, 30 -> 30, 25 -> 30); the encoder paces the rest.
++            ScreenCapturer *sc = [ScreenCapturer sharedCapturer];
++            if (want <= 0) {
++                [sc setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
++            } else {
++                int cap = 60 / MAX(1, 60 / want);
++                [sc setPreferredFrameRateWithMin:cap preferred:cap max:cap];
++            }
++            [sc forceNextFrameUpdate];
++        });
+     TVH264Start();
+ }
+ 

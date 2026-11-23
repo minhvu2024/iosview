@@ -3,8 +3,6 @@ package device
 import (
 	"math"
 	"time"
-
-	"iosview/internal/rfb"
 )
 
 // Input event kinds sent to a device.
@@ -61,7 +59,7 @@ func toPx(n float64, size int) int {
 // with the same button mask are coalesced into the newest one when the
 // device falls behind, so latency never accumulates; presses, releases and
 // keys are never dropped. Only one writer runs per device (see d.owner).
-func (d *Device) runWriter(c *rfb.Client) {
+func (d *Device) runWriter(c session) {
 	// The previous session may have ended with a finger (or Home/Power) still
 	// down: its release never reached the phone. Lift it before anything else.
 	if d.held.mask != 0 && c.PointerEvent(0, d.held.x, d.held.y) == nil {
@@ -87,7 +85,7 @@ func (d *Device) runWriter(c *rfb.Client) {
 	}
 }
 
-func (d *Device) flush(c *rfb.Client, batch []Event) {
+func (d *Device) flush(c session, batch []Event) {
 	w, h := c.Size()
 	var ptr [][3]int
 	flushPtr := func() {
@@ -137,7 +135,7 @@ func (d *Device) flush(c *rfb.Client, batch []Event) {
 	flushPtr()
 }
 
-func (d *Device) pressButton(c *rfb.Client, b string, w, h int) {
+func (d *Device) pressButton(c session, b string, w, h int) {
 	cx, cy := w/2, h/2
 	tap := func(mask uint8, hold time.Duration) {
 		_ = c.PointerEvent(mask, cx, cy)
@@ -193,7 +191,7 @@ func (d *Device) pressButton(c *rfb.Client, b string, w, h int) {
 
 // commandKey presses ⌘+key with small gaps so iOS registers the shortcut
 // reliably (TrollVNC maps Super to Command).
-func commandKey(c *rfb.Client, ks uint32) {
+func commandKey(c session, ks uint32) {
 	_ = c.KeyEvent(ksSuperL, true)
 	time.Sleep(20 * time.Millisecond)
 	_ = c.KeyEvent(ks, true)

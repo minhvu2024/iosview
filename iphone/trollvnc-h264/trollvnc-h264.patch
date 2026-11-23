@@ -19,7 +19,7 @@ index 27d5f77..a2b7f35 100644
  trollvncserver_PRIVATE_FRAMEWORKS += FrontBoardServices
  
 diff --git a/src/trollvncserver.mm b/src/trollvncserver.mm
-index 988a079..b4b5873 100644
+index 988a079..2498c1f 100644
 --- a/src/trollvncserver.mm
 +++ b/src/trollvncserver.mm
 @@ -52,6 +52,7 @@
@@ -165,7 +165,7 @@ index 988a079..b4b5873 100644
  
      if (gClipboardEnabled && !gIsClipboardStarted && gClientCount > 0) {
          gIsClipboardStarted = YES;
-@@ -3485,10 +3535,36 @@ static void prepareScreenCapturer(void) {
+@@ -3485,10 +3535,51 @@ static void prepareScreenCapturer(void) {
      }
  
      gFrameHandler = ^(CMSampleBufferRef _Nonnull sampleBuffer) {
@@ -190,20 +190,35 @@ index 988a079..b4b5873 100644
 +    if (port <= 0)
 +        return;
 +    int fps = gFpsMax > 0 ? gFpsMax : (gFpsPref > 0 ? gFpsPref : 60);
-+    TVH264Configure(port, gH264BitrateKbps, fps, tvH264Rotation, ^(int n) {
-+        // main thread
-+        (void)n;
-+        tvSyncCaptureState();
-+        if (TVH264ClientCount() > 0)
-+            [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
-+    });
++    TVH264Configure(
++        port, gH264BitrateKbps, fps, tvH264Rotation,
++        ^(int n) {
++            // main thread
++            (void)n;
++            tvSyncCaptureState();
++            if (TVH264ClientCount() > 0)
++                [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
++        },
++        ^(int want) {
++            // main thread: iOSView asked for another frame rate. Capture at the
++            // smallest rate the 60 Hz display can tick evenly that still covers
++            // it (45 -> 60, 30 -> 30, 25 -> 30); the encoder paces the rest.
++            ScreenCapturer *sc = [ScreenCapturer sharedCapturer];
++            if (want <= 0) {
++                [sc setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
++            } else {
++                int cap = 60 / MAX(1, 60 / want);
++                [sc setPreferredFrameRateWithMin:cap preferred:cap max:cap];
++            }
++            [sc forceNextFrameUpdate];
++        });
 +    TVH264Start();
 +}
 +
  static void prepareBulletinManager(void) {
      BulletinManager *mgr = [BulletinManager sharedManager];
      [mgr revokeSingleNotification];
-@@ -4205,6 +4281,7 @@ int main(int argc, const char *argv[]) {
+@@ -4205,6 +4296,7 @@ int main(int argc, const char *argv[]) {
          prepareBulletinManager();
          prepareClipboardManager();
          prepareScreenCapturer();

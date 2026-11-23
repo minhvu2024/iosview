@@ -36,6 +36,10 @@ type Device struct {
 	InSync    bool   `json:"inSync"`
 	UDID      string `json:"udid,omitempty"` // known once the phone is identified
 	Wifi      string `json:"wifi,omitempty"` // Wi-Fi address of the same phone (fallback path)
+	// Kind of control session: "" = TrollVNC, "cd" = CoreDevice (iOS 17.4+
+	// without jailbreak, through the iosview-cd sidecar; cable only).
+	Kind string `json:"kind,omitempty"`
+	IOS  string `json:"ios,omitempty"` // iOS version (cable phones)
 
 	m        *Manager
 	usbID    int64
@@ -47,7 +51,7 @@ type Device struct {
 	stop     chan struct{}
 	attempts int
 	owner    chan struct{} // held by the one writer that may drain queue
-	cur      *rfb.Client   // live control session (guarded by m.mu)
+	cur      session       // live control session (guarded by m.mu)
 	held     *ptrState     // last pointer state sent to the phone (writer-owned)
 }
 
@@ -89,6 +93,78 @@ func (d *Device) Dial() (net.Conn, error) {
 		return usbmux.Connect(usbID, uint16(port))
 	}
 	return dialLAN(addr, lanTimeout)
+}
+
+// connect opens a control session over the best path. A cable phone without
+// TrollVNC (port closed) on iOS 17.4+ switches to the CoreDevice driver.
+// conn is the raw stream when a TrollVNC handshake failed (closed by caller).
+func (d *Device) connect(pw string, mayProbe bool) (session, net.Conn, error) {
+	m := d.m
+	m.mu.Lock()
+	kind, usb, usbID, udid, ios := d.Kind, d.usbOK, d.usbID, d.UDID, d.IOS
+	m.mu.Unlock()
+	if usb && ios == "" && mayProbe {
+		if v, err := usbmux.ProductVersion(usbID); err == nil {
+			ios = v
+			m.mu.Lock()
+			d.IOS = v
+			m.mu.Unlock()
+			m.notify()
+		}
+	}
+	if kind == "cd" {
+		if !usb {
+			return nil, nil, errors.New("iPhone iOS 17+ không jailbreak: cần cắm cáp USB")
+		}
+		cl, err := startCD(udid, d.setErr, func(text string) { m.publishClip(d.ID, text) })
+		if err != nil {
+			return nil, nil, err
+		}
+		return cl, nil, nil
+	}
+	conn, err := d.Dial()
+	if err != nil {
+		if usb && errors.Is(err, ErrPortClosed) && iosAtLeast(ios, 17, 4) {
+			m.mu.Lock()
+			d.Kind = "cd"
+			m.mu.Unlock()
+			log.Printf("%s: iOS %s không có TrollVNC — dùng CoreDevice", d.ID, ios)
+			return d.connect(pw, false)
+		}
+		return nil, nil, err
+	}
+	rc, err := rfb.Handshake(conn, rfb.Options{
+		Password:    pw,
+		OnClipboard: func(text string) { m.publishClip(d.ID, text) },
+		OnResize: func(w, h int) {
+			m.mu.Lock()
+			d.Width, d.Height = w, h
+			m.mu.Unlock()
+			m.notify()
+		},
+	})
+	if err != nil {
+		return nil, conn, err
+	}
+	return rc, conn, nil
+}
+
+// CDBase is the sidecar URL of a CoreDevice phone's live session ("" if the
+// phone is not a CoreDevice phone or not connected).
+func (d *Device) CDBase() string {
+	d.m.mu.Lock()
+	defer d.m.mu.Unlock()
+	if c, ok := d.cur.(*cdClient); ok {
+		return c.Base()
+	}
+	return ""
+}
+
+// IsCD reports whether the phone is driven through CoreDevice.
+func (d *Device) IsCD() bool {
+	d.m.mu.Lock()
+	defer d.m.mu.Unlock()
+	return d.Kind == "cd"
 }
 
 // refresh recomputes the user-visible path. USB always wins over Wi-Fi.
@@ -531,20 +607,7 @@ func (d *Device) loop(stop chan struct{}) {
 		m.mu.Unlock()
 		m.notify()
 
-		var c *rfb.Client
-		conn, err := d.Dial()
-		if err == nil {
-			c, err = rfb.Handshake(conn, rfb.Options{
-				Password:    pw,
-				OnClipboard: func(text string) { m.publishClip(d.ID, text) },
-				OnResize: func(w, h int) {
-					m.mu.Lock()
-					d.Width, d.Height = w, h
-					m.mu.Unlock()
-					m.notify()
-				},
-			})
-		}
+		c, conn, err := d.connect(pw, true)
 		if stopped() {
 			if c != nil {
 				c.Close()
@@ -595,7 +658,7 @@ func (d *Device) loop(stop chan struct{}) {
 				break flushQ
 			}
 		}
-		w, h := c.Size()
+		w, h := sessionSize(c)
 		m.mu.Lock()
 		if d.stop != stop { // switched path while connecting
 			m.mu.Unlock()

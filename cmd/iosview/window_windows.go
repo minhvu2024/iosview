@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && !wails
 
 package main
 
@@ -17,7 +17,7 @@ func init() { runtime.LockOSThread() }
 
 // runWindow shows the UI in a native window backed by WebView2 and blocks until
 // it is closed. It returns false (without blocking) when WebView2 is missing.
-func runWindow(url, version string) (ok bool) {
+func runWindow(o winOpts) (ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("WebView2 lỗi: %v", r)
@@ -25,12 +25,19 @@ func runWindow(url, version string) (ok bool) {
 		}
 	}()
 	w0, h0 := windowSize(1560, 940)
+	// GPU flags for the browser process (0.10.17): raster on the GPU and share
+	// the buffers with the compositor, which helps when many video tiles are
+	// drawn at once. The WebView2 runtime reads this variable at start-up; set
+	// it yourself (even to " ") to override.
+	if os.Getenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") == "" {
+		os.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--enable-gpu-rasterization --enable-zero-copy")
+	}
 	data := filepath.Join(os.Getenv("LocalAppData"), "iOSView", "webview2")
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		AutoFocus: true,
 		DataPath:  data,
 		WindowOptions: webview2.WindowOptions{
-			Title:  "iOSView " + version,
+			Title:  "iOSView " + o.Version,
 			Width:  w0,
 			Height: h0,
 			IconId: 1, // RT_GROUP_ICON in rsrc_windows_amd64.syso
@@ -44,7 +51,7 @@ func runWindow(url, version string) (ok bool) {
 	defer w.Destroy()
 	mw, mh := windowSize(1100, 640)
 	w.SetSize(int(mw), int(mh), webview2.HintMin)
-	w.Navigate(url)
+	w.Navigate(o.URL)
 	w.Run()
 	return true
 }

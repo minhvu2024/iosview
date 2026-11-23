@@ -7,3 +7,7 @@ iosview.log
 *.log
 screenshots/
 .stage/
+.wrangler/
+iosview*.exe.old
+iosview*.exe.new
+/iosview-cd/

@@ -8,6 +8,8 @@ Xem và điều khiển **nhiều iPhone cùng lúc** trên Windows, **đồng b
 - **Copy/paste hai chiều** PC ⇄ iPhone (Ctrl+C / Ctrl+V). Chữ không dấu gõ thẳng không cần bấm Paste; chữ có dấu nạp clipboard rồi chạm Paste. Dán đồng bộ cả nhóm.
 - Phím cứng: Home, Đa nhiệm, Khoá, Vol±.
 
+> **iPhone không jailbreak (iOS 17.4+):** không cần TrollVNC. Bật Chế độ nhà phát triển, cắm cáp USB, đặt `iosview-cd` cạnh exe — xem [sidecar/README.md](sidecar/README.md). Dán giữ nguyên dấu tiếng Việt.
+
 ## 1. Chuẩn bị trên iPhone
 
 Hướng dẫn chi tiết từng bước (chọn đúng bản TrollVNC, cài, chỉnh từng mục, kiểm tra kết nối, xử lý lỗi, triển khai hàng loạt): **[docs/HUONG-DAN-IPHONE.md](docs/HUONG-DAN-IPHONE.md)**.
@@ -34,9 +36,9 @@ Máy không cắm USB: mở tab **Kết nối** ở bảng bên phải để nh�
 | Vùng | Nội dung |
 |---|---|
 | Lưới máy (trái) | Mỗi ô có **số máy** (01, 02… giữ nguyên khi khởi động lại, đổi được), **tên**, nhãn USB / Wi‑Fi, chấm trạng thái, nút ⤢ mở màn lớn. Lưới luôn xếp theo số từ nhỏ tới lớn. Viền **xanh** = đang chọn (thuộc nhóm đồng bộ), viền **tím** = máy đang mở ở màn lớn |
-| Màn lớn | **Mặc định đóng**, lưới dùng hết chỗ. Mở khi cần: nhấp đúp thanh tên của máy (hoặc nút ⤢, hoặc nhấp đúp số trong lưới số). Đóng bằng **✕ Đóng**, **nhấp chuột phải vào chỗ trống**, nút **Màn lớn**, hoặc nhấp vào ô "Đang ở màn lớn". **Ctrl + ←/→** chuyển màn lớn sang máy trước/sau |
-| Chức năng máy | Hiện cùng màn lớn: Home, đa nhiệm, khoá, âm lượng, dán, chụp màn hình… (cả nhóm khi bật đồng bộ) và thông tin kết nối |
-| Bảng điều khiển (phải) | Nút nhóm, ô gõ văn bản, thanh trượt cỡ/độ nét, lọc USB/Wi‑Fi, **nhãn máy** dạng lưới số. Tab **Kết nối** và **Cài đặt**. Nút ☾ đổi giao diện sáng/tối, » thu gọn bảng |
+| Màn lớn | Nhấp vào **hình** là chạm, gửi ngay xuống máy. Mở: nút **⤢** trên ô máy, nhấp đúp thanh tên, nhấp đúp số trong lưới số, hoặc bật **Ctrl+S** (nhấp màn nhỏ = phóng to; tắt = nhấp/vuốt điều khiển). Đóng: **nhấp phải ra ngoài màn lớn**, Màn lớn **nổi** trên lưới. **✕** trên thanh công cụ hoặc nhấp ô "Đang ở màn lớn". **Ctrl + ←/→** chuyển sang máy trước/sau; ⤢ ở máy khác cũng chuyển, không đóng-mở. Nút **⛶ Toàn cửa sổ** trên thanh công cụ: màn lớn chiếm cả cửa sổ (ẩn lưới + bảng), bấm lại để về cỡ thường |
+| Thanh công cụ màn lớn | Ngay dưới màn lớn: Đổi tên, Dán, Chọn hết chữ, Xoá ô nhập, Tắt tiếng, Chụp, Phóng to, Đóng. Rê chuột vào dòng chú thích để xem thông tin kết nối (USB/Wi‑Fi, độ phân giải, iOS, UDID). Màn lớn **nổi trên lưới** (lưới không xê dịch), mở/đóng bằng chuyển động phóng từ ô máy |
+| Bảng điều khiển (phải) | 5 khối: **Nhóm máy** (Đồng bộ, Chọn hết/Bỏ chọn) · **Điều khiển** (Home, Đa nhiệm, Quay lại, Khoá, Vol, Dán, Xoá ô, Chụp) · **Gõ văn bản** · **Hiển thị** (bộ chọn *Nhấp màn nhỏ: Điều khiển / Phóng to*, Màn lớn, FPS, thanh trượt cỡ/độ nét) · **Lọc & nhãn máy**. Tab **Kết nối** và **Cài đặt**. Nút ☾ đổi giao diện sáng/tối (mặc định luôn sáng), » thu gọn bảng |
 
 ### Đổi tên, chọn máy, nhãn
 
@@ -45,7 +47,14 @@ Máy không cắm USB: mở tab **Kết nối** ở bảng bên phải để nh�
 - **Chọn / bỏ chọn:** nhấp vào thanh tiêu đề của ô, hoặc nhấp số máy trong lưới số.
 - **Phóng to / thu nhỏ màn hình máy:** **Ctrl + lăn chuột** (hoặc Ctrl + / Ctrl −) trên lưới đổi cỡ các ô; trên màn lớn đổi cỡ màn lớn. **Ctrl+0** về cỡ mặc định. Cửa sổ chương trình không bị zoom nữa.
 - **Nhãn máy:** chọn các máy rồi bấm **Thêm nhãn**. Tick ô vuông của nhãn = chọn cả nhóm; nhấp tên nhãn = chỉ hiện máy của nhãn đó; nhấp đúp = đổi tên nhãn; ↻ = cập nhật nhãn theo các máy đang chọn.
+- **Fps / độ phân giải (iPhone nóng, lag):** tab **Cài đặt → Hình H.264**: màn nhỏ và màn lớn mỗi loại một cặp *fps* (5–60) và *%* độ phân giải (25–100). Mặc định màn nhỏ 30 fps · 50 %, màn lớn 60 fps · 100 %. Máy yếu: chuột phải → **Hình riêng cho máy này…**, nhập ví dụ `20 40`. Áp dụng ngay, cần TrollVNC 3.3‑1004 trên iPhone. Ô "Hiện fps" hiển thị mức đang dùng.
 - **Chụp màn hình:** ảnh PNG lưu vào thư mục `screenshots` cạnh exe, tên file có số và tên máy.
+
+## Cập nhật cho nhân viên (bản nội bộ)
+
+- **Anh (người build):** build xong `iosview-<phiên bản>.exe` → nhấp đúp `iphone\deploy-repo.bat`. Script lấy exe có số phiên bản cao nhất, đẩy lên `https://iosview.pages.dev/pc/` kèm `latest.json` (hash, kích thước), cùng lúc với kho Sileo.
+- **Nhân viên:** iOSView tự so sánh với bản trên mạng (lúc mở, mỗi 30 phút, hoặc nhấp vào số phiên bản / Cài đặt → **Kiểm tra cập nhật**). Có bản mới: góc dưới bảng điều khiển hiện nút **Cập nhật x.y.z** → bấm → tải xong chương trình tự đóng, thay file và mở lại. Tên máy, số máy, cài đặt giữ nguyên.
+- So sánh bằng mã hash nên không cần quản lý phiên bản. Mất mạng thì bỏ qua, chạy bản đang có. Nên để exe trong thư mục có quyền ghi (không để trong Program Files).
 
 ## 3. Thao tác
 
@@ -62,17 +71,18 @@ Danh sách phím tắt đầy đủ: [`docs/SHORTCUTS.md`](docs/SHORTCUTS.md) (t
 | Lăn chuột | Cuộn |
 | Gõ phím khi đang trỏ vào một máy | Bàn phím PC gõ thẳng vào máy: chữ hoa/thường, số, ký hiệu, phím mũi tên, Enter, Backspace. Chữ có dấu thì dùng ô "Gõ văn bản". Nên tắt Unikey khi gõ kiểu này |
 | **Ctrl+V** khi trỏ chuột vào máy | Gõ thẳng clipboard của PC vào ô đang nhập (không cần bấm Paste). Chữ có dấu tiếng Việt được **gõ bỏ dấu** (Nguyễn → Nguyen) — tắt trong tab Cài đặt nếu muốn giữ dấu (khi đó nạp clipboard máy, chạm Paste). Cần con trỏ đang ở ô nhập. Đồng bộ BẬT thì dán vào **mọi máy trong nhóm**. Hỗ trợ tiếng Việt có dấu và emoji |
-| **Ctrl+C / Ctrl+X** | *Tạm gác*: iOS 15 bỏ qua phím tắt ⌘ từ TrollVNC nên chưa chạy. Cách thay thế: chọn chữ trên iPhone bằng chuột, bấm **Copy** trên menu iPhone, nội dung tự về clipboard PC |
-| **Ctrl+A** | Chọn **tất cả máy** (đưa vào nhóm đồng bộ). Chọn hết chữ trong ô: nút **Chọn hết chữ** ở bảng chức năng máy |
+| **Ctrl+V nhiều dòng** | Copy **N dòng** (mỗi dòng một tài khoản) rồi Ctrl+V khi đang chọn **từ 2 máy trở lên**: dòng 1 → máy số nhỏ nhất, dòng 2 → máy kế… Các máy gõ **song song**, không bấm Enter cuối dòng. Luôn chia như vậy dù Đồng bộ bật hay tắt và đang trỏ vào máy nào; giữ **Alt** thì gõ nguyên khối vào một máy. Máy offline vẫn giữ chỗ nên không lệch dòng. **Mẹo:** trong một dòng dùng phím **Tab** để nhảy ô, ví dụ `tendangnhap<Tab>matkhau` điền cả tên đăng nhập lẫn mật khẩu trong một lần dán |
+| **Ctrl+C** | Khi cửa sổ app đang focus và không focus ô nhập: lấy clipboard các máy đang chọn, hoặc tất cả máy online nếu không chọn. Chỉ lấy dữ liệu, không thêm số hoặc tên máy; giữ nguyên xuống dòng; đọc song song, timeout 2 giây/máy, lỗi để rỗng. Hỗ trợ TrollVNC trước; CoreDevice để rỗng. Không hiện thông báo. |
+| **Ctrl+A** | Chọn **tất cả máy** (đưa vào nhóm đồng bộ). Chọn hết chữ trong ô: nút **Chọn hết chữ** ở thanh công cụ dưới màn lớn |
 | **Shift + nhấp** / **Ctrl + nhấp** / **Ctrl + kéo** | Chọn liên tục / chọn một máy / chọn khung nhiều máy. Nhấp chỗ trống = bỏ chọn tất cả |
 | **Ctrl+D** | Dán cưỡng bức: luôn gõ từng phím (bỏ dấu), cho ô không nhận Paste |
 | **Ctrl+K** · **Ctrl+R** / **Ctrl+Q** · **Ctrl+,** | Cụm từ nhanh · mở / đóng ghi chú · mở cài đặt |
-| **Ctrl+S** | Bật/tắt chạm trên màn nhỏ (tắt: nhấp màn nhỏ = mở lên màn lớn) |
 | **Ctrl+Backspace** | Xoá sạch ô nhập (chọn hết + Backspace) |
 | Nút **Dán (Ctrl+V)** | Dán clipboard của PC vào máy đang chọn (hoặc cả nhóm khi bật đồng bộ) |
+| Nút **FPS** | Hiện trên từng máy: fps, băng thông, chế độ hình, **trễ Nms** (từ lúc PC nhận frame đến khi vẽ xong — phần trễ phía PC; phần còn lại là iPhone encode + đường truyền), `đợi N` khi decoder tồn đọng, `bỏ N` frame đã bỏ qua |
 | Ô "Gõ văn bản…" + Enter | Gõ nhanh một đoạn văn bản rồi dán vào máy |
 | Thanh nút dưới mỗi máy: **▭ Đa nhiệm · ○ Home · ‹ Back** | Back = vuốt từ mép trái (hoạt động trong app có nút quay lại, Safari, Cài đặt…). Đồng bộ BẬT và máy đang chọn thì cả nhóm cùng bấm |
-| Nhấp đúp tiêu đề ô / nút ⤢ | Mở máy đó ở màn lớn; nhấp phải chỗ trống hoặc ✕ Đóng để đóng. Phóng to toàn cửa sổ: chuột phải → Phóng to toàn cửa sổ |
+| Nút ⤢ / nhấp đúp tiêu đề ô | Mở máy đó ở màn lớn; ✕ trên thanh công cụ để đóng. Toàn cửa sổ: nút ⛶ trên thanh công cụ hoặc chuột phải → Toàn cửa sổ |
 | Nhấp đúp số máy | Đổi số máy |
 | **Ctrl + lăn chuột** | Phóng to / thu nhỏ màn hình máy (không cuộn trên iPhone, không zoom cửa sổ) |
 | Nhấp đúp tên máy / **F2** | Đổi tên máy đang trỏ chuột |
@@ -131,7 +141,7 @@ go test ./internal/...
 
 Tham số dòng lệnh: `-listen 0.0.0.0:7788` (mở cho máy khác trong LAN; chỉ dùng trong mạng tin cậy), `-config path`, `-no-browser`, `-keep-alive` (không tự thoát khi đóng cửa sổ).
 
-Icon nằm ở `assets/` (`icon.svg` là bản gốc). Muốn đổi icon thì tạo lại `iosview.ico` rồi chạy `rsrc -ico assets/iosview.ico -arch amd64 -o cmd/iosview/rsrc_windows_amd64.syso`.
+Icon nằm ở `assets/` (`icon.svg` là bản gốc, cũng dùng cho `web/src/icon.svg|png`). Muốn đổi icon: render SVG ra PNG 16–256 → gộp thành `iosview.ico` → `go run github.com/akavel/rsrc@v0.10.2 -ico assets/iosview.ico -arch amd64 -o cmd/iosview/rsrc_windows_amd64.syso`. Icon trong giao diện lấy từ bộ **Lucide** (bảng `IC` trong `web/src/main.ts`).
 
 ## 6. Xử lý sự cố
 
@@ -144,5 +154,12 @@ Icon nằm ở `assets/` (`icon.svg` là bản gốc). Muốn đổi icon thì t
 ## 7. Lộ trình
 
 - [ ] Ghi lại thao tác và phát lại (macro) cho cả nhóm
-- [ ] Driver cho máy **không jailbreak** (WebDriverAgent + app Broadcast H.264), dùng chung giao diện và cơ chế đồng bộ
+- [x] Driver cho máy **không jailbreak, iOS 17.4+** (CoreDevice qua `iosview-cd`, 0.10.14) — xem [sidecar/README.md](sidecar/README.md)
+- [ ] Máy không jailbreak iOS 16.7–17.3 (TrollStore không cài được): WebDriverAgent
 - [ ] Phát hiện máy qua Bonjour (mDNS)
+
+Thử copy vùng chữ đang chọn trên iPhone: chạy `iosview-0.11.3.exe -copy-command` để gửi Cmd+C trước khi đọc (mặc định tắt). TrollVNC phải bật Clipboard. Clipboard chưa từng được TrollVNC gửi trong phiên có thể để rỗng; có thể bấm Copy trên menu iPhone rồi Ctrl+C trong app. Cờ Cmd+C cần được xác nhận riêng trên iOS 15.8.
+
+Copy bằng nút trong app iPhone: bật Đồng bộ, mở cùng màn hình trên các máy và nhấp nút Copy. iOSView gom các sự kiện clipboard mới của nhóm trong tối đa 2 giây rồi ghi một lần lên clipboard PC theo số máy; máy không trả dữ liệu để rỗng. Không chọn máy nào thì chạm chỉ điều khiển máy đang trỏ; Ctrl+C vẫn lấy tất cả máy online. Ctrl+C lấy clipboard đã nhận trong phiên; nếu chưa biết thì yêu cầu đọc, timeout 2 giây/máy. Đọc clipboard không tự bấm nút Copy trong ứng dụng iPhone. Cờ `-copy-command` vẫn là thử nghiệm.
+
+Cài đặt → **Dòng trống giữa dữ liệu copy**: tắt (mặc định) ghép dữ liệu bằng một ký tự xuống dòng; bật ghép bằng hai ký tự xuống dòng. Áp dụng cho Ctrl+C và sự kiện Copy từ iPhone, giữ nguyên xuống dòng trong từng dữ liệu.

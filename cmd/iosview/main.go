@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"io/fs"
 	"log"
@@ -21,6 +22,7 @@ import (
 
 	"iosview/internal/device"
 	"iosview/internal/server"
+	"iosview/internal/update"
 	"iosview/web"
 )
 
@@ -33,6 +35,9 @@ func main() {
 	listen := flag.String("listen", "", "địa chỉ web UI (mặc định 127.0.0.1:7788)")
 	noBrowser := flag.Bool("no-browser", false, "không tự mở cửa sổ giao diện")
 	keepAlive := flag.Bool("keep-alive", false, "không tự thoát khi đóng cửa sổ giao diện")
+	afterUpdate := flag.Bool("after-update", false, "vừa được bản cập nhật khởi động (chờ bản cũ thoát)")
+	mica := flag.Bool("mica", true, "nền Mica mờ (bản Wails, chỉ Windows 11)")
+	copyCommand := flag.Bool("copy-command", false, "thử gửi Cmd+C trước khi đọc clipboard iPhone")
 	flag.Parse()
 
 	if lf, err := os.OpenFile(filepath.Join(dir, "iosview.log"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil {
@@ -54,11 +59,17 @@ func main() {
 	url := "http://" + cfg.Listen
 
 	ln, err := net.Listen("tcp", cfg.Listen)
+	// Started by an update: the old process is exiting right now and still
+	// holds the port for a moment.
+	for i := 0; err != nil && *afterUpdate && i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		ln, err = net.Listen("tcp", cfg.Listen)
+	}
 	if err != nil {
 		// Already running? Just bring up another window on it.
 		if c, e := http.Get(url + "/api/state"); e == nil {
 			c.Body.Close()
-			if !runWindow(url, version) {
+			if !runWindow(winOpts{URL: url, Version: version, Mica: *mica}) {
 				openBrowser(url)
 			}
 			return
@@ -71,14 +82,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := &server.Server{M: m, Web: dist, ShotDir: filepath.Join(dir, "screenshots"), Version: version}
-	if *noBrowser {
-		log.Fatal(http.Serve(ln, srv.Handler()))
+	srv := &server.Server{M: m, Web: dist, ShotDir: filepath.Join(dir, "screenshots"), Version: version, CopyCommand: *copyCommand}
+	h := srv.Handler()
+	if version != "dev" {
+		srv.Up = update.New(exe, version)
+		go srv.Up.Run(context.Background())
 	}
-	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
+	if *noBrowser {
+		log.Fatal(http.Serve(ln, h))
+	}
+	go func() { log.Fatal(http.Serve(ln, h)) }()
 
 	// Native window first: it blocks until the user closes it.
-	if runWindow(url, version) {
+	if runWindow(winOpts{URL: url, Version: version, Handler: h, Mica: *mica}) {
 		if *keepAlive {
 			select {}
 		}

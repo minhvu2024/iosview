@@ -6,10 +6,6 @@
 <title>iOSView</title>
 <link rel="icon" type="image/png" sizes="256x256" href="icon.png">
 <link rel="icon" type="image/svg+xml" href="icon.svg">
-<script>
-  // theme before first paint (no flash)
-  try { const t = localStorage.getItem("iosview.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
-</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -32,34 +28,18 @@
   <section id="stage" class="stage" aria-label="Màn lớn máy chính" hidden>
     <div id="stageScreen" class="stage-screen"></div>
     <div id="stageNav" class="navbar stage-nav"></div>
-    <div class="stage-cap"><span class="cap-dot"></span><span id="stageCap"></span><button id="stageClose" class="stage-close" title="Đóng màn lớn (hoặc nhấp chuột phải vào chỗ trống)">✕ Đóng</button></div>
+    <div class="stage-cap"><span class="cap-dot"></span><span id="stageCap"></span></div>
+    <div id="stageTools" class="stage-tools"></div>
   </section>
-
-  <!-- ============ chức năng máy chính ============ -->
-  <aside id="dev" class="dev" aria-label="Chức năng máy" hidden>
-    <div class="dev-h">
-      <span id="devNo" class="dev-no"></span>
-      <span id="devName" class="dev-name" title="Nhấp đúp để đổi tên"></span>
-      <button id="devRename" class="ib" title="Đổi tên (F2)"></button>
-    </div>
-    <div class="dev-b">
-      <div class="sec">CHỨC NĂNG <span class="sec-note" id="devScope"></span></div>
-      <div id="devFns"></div>
-      <div class="sec">THÔNG TIN</div>
-      <div id="devMeta" class="meta"></div>
-      <div id="devExtra"></div>
-    </div>
-  </aside>
 
   <!-- ============ bảng điều khiển ============ -->
   <aside id="ctrl" class="ctrl" aria-label="Bảng điều khiển">
     <div class="brand">
-      <div class="brand-tools">
-        <button id="collapseBtn" title="Thu gọn / mở rộng bảng"></button>
-        <button id="themeBtn" title="Giao diện sáng / tối"></button>
-      </div>
       <img class="brand-mk" src="icon.svg" alt="">
       <div class="brand-txt"><b>iOSView</b><small>Điều khiển nhiều iPhone</small></div>
+      <div class="brand-tools">
+        <button id="collapseBtn" title="Thu gọn / mở rộng bảng"></button>
+      </div>
     </div>
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="main" aria-selected="true">Thường dùng</button>
@@ -68,17 +48,26 @@
     </div>
 
     <div class="ctrl-b" data-pane="main">
-      <div class="btns" id="btns"></div>
-      <form id="textForm" class="textbox" autocomplete="off">
-        <input id="textInput" placeholder="Gõ nội dung rồi Enter…" spellcheck="false">
-        <button type="submit">Gửi</button>
-      </form>
+      <div id="btns"></div>
+      <div class="blk">
+        <div class="blk-h">Gõ văn bản</div>
+        <form id="textForm" class="textbox" autocomplete="off">
+          <input id="textInput" placeholder="Gõ nội dung rồi Enter…" spellcheck="false">
+          <button type="submit">Gửi</button>
+        </form>
+      </div>
+      <div class="blk" id="viewBlk">
+      <div class="blk-h">Hiển thị</div>
+      <div id="viewBtns"></div>
       <div class="sliders">
         <div class="sl"><label for="sStage">Cỡ màn lớn</label><input id="sStage" type="range" min="40" max="100" step="5"><output id="oStage"></output></div>
         <div class="sl"><label for="sTile">Cỡ màn nhỏ</label><input id="sTile" type="range" min="110" max="380" step="10"><output id="oTile"></output></div>
         <div class="sl"><label for="sQ">Nét màn nhỏ</label><input id="sQ" type="range" min="0" max="9"><output id="oQ"></output></div>
         <div class="sl"><label for="sFQ">Nét màn lớn</label><input id="sFQ" type="range" min="1" max="9"><output id="oFQ"></output></div>
       </div>
+      </div>
+      <div class="blk">
+      <div class="blk-h">Lọc &amp; nhãn máy</div>
       <div class="filt" id="filt" role="tablist">
         <button data-f="all" aria-selected="true">Tất cả</button>
         <button data-f="usb" aria-selected="false">USB</button>
@@ -86,14 +75,15 @@
         <button data-f="off" aria-selected="false">Mất kết nối</button>
       </div>
       <div class="tags-h">
-        <span>▾ Nhãn máy</span>
-        <button id="addTag" class="link-btn" title="Tạo nhãn gồm các máy đang chọn"><svg viewBox="0 0 12 12"><rect x=".5" y=".5" width="11" height="11" rx="1.5"/><path d="M6 3v6M3 6h6"/></svg>Thêm nhãn</button>
+        <span>Nhãn</span>
+        <button id="addTag" class="link-btn" title="Tạo nhãn gồm các máy đang chọn"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>Thêm nhãn</button>
       </div>
       <form id="tagNew" class="tag-new" hidden autocomplete="off">
         <input id="tagName" maxlength="32" placeholder="Tên nhãn (gồm các máy đang chọn)">
         <button type="submit">Lưu</button>
       </form>
       <div id="tags" class="tags"></div>
+      </div>
     </div>
 
     <div class="ctrl-b" data-pane="conn" hidden>
@@ -117,29 +107,27 @@
         <label class="check"><input id="setStrip" type="checkbox"><span>Bỏ dấu tiếng Việt khi dán<small>Nguyễn → Nguyen. Tắt thì chữ có dấu nạp vào clipboard máy để chạm Paste.</small></span></label>
         <button type="submit" class="primary">Lưu cài đặt</button>
       </form>
+      <div class="vid">
+        <div class="vid-h">Hình H.264 <small>fps 5–60 · độ phân giải 25–100 %</small></div>
+        <div class="vid-r"><span>Màn nhỏ</span><input id="vGF" type="number" min="5" max="60"><em>fps</em><input id="vGS" type="number" min="25" max="100" step="5"><em>%</em></div>
+        <div class="vid-r"><span>Màn lớn</span><input id="vBF" type="number" min="5" max="60"><em>fps</em><input id="vBS" type="number" min="25" max="100" step="5"><em>%</em></div>
+        <p class="note">Thấp hơn = iPhone mát và nhẹ hơn. Đổi là áp dụng ngay. Riêng từng máy: chuột phải vào máy → <b>Hình riêng cho máy này…</b> Cần TrollVNC 3.3‑1004 trên iPhone.</p>
+      </div>
+      <label class="check"><input id="setCopyBlank" type="checkbox" role="switch"><span>Dòng trống giữa dữ liệu copy</span></label>
       <button id="keysBtn" type="button" class="wide">Phím tắt…</button>
-      <p class="note">Trên màn hình máy: <b>trái</b> = chạm · <b>phải</b> = quay lại · <b>giữ phải</b> = đa nhiệm · <b>giữa</b> = Home · <b>Esc</b> = quay lại · giữ <b>Alt</b> = chỉ máy đang trỏ. <b>Ctrl+A</b> chọn tất cả máy · <b>Shift+nhấp</b> chọn liên tục · <b>Ctrl+kéo</b> chọn khung · nhấp chỗ trống = bỏ chọn · nhấp phải chỗ trống = đóng màn lớn.</p>
-      <p class="note">Nhấp đúp <b>số máy</b> để đổi số (trùng số thì hai máy đổi cho nhau), nhấp đúp <b>tên</b> để đổi tên, nhấp đúp chỗ trống trên thanh tên hoặc nút ⤢ để mở màn lớn.</p>
+      <button id="updCheck" type="button" class="wide">Kiểm tra cập nhật</button>
+      <p class="note">Trên màn hình máy: <b>trái</b> = chạm · <b>phải</b> = quay lại · <b>giữ phải</b> = đa nhiệm · <b>giữa</b> = Home · <b>Esc</b> = quay lại · giữ <b>Alt</b> = chỉ máy đang trỏ. <b>Ctrl+A</b> chọn tất cả máy · <b>Shift+nhấp</b> chọn liên tục · <b>Ctrl+kéo</b> chọn khung · nhấp chỗ trống = bỏ chọn. Nút <b>⤢</b> trên ô máy = mở màn lớn.</p>
+      <p class="note">Nhấp đúp <b>số máy</b> để đổi số (trùng số thì hai máy đổi cho nhau), nhấp đúp <b>tên</b> để đổi tên, nút ⤢ hoặc nhấp đúp thanh tên để mở màn lớn.</p>
       <p class="note">Ảnh chụp màn hình lưu trong thư mục <code>screenshots</code> cạnh iosview.exe.</p>
     </div>
 
     <div class="ctrl-f">
-      <span id="selinfo" class="selinfo"></span>
-      <span id="appVer" class="ver"></span>
+      <span id="ftInfo" class="selinfo"></span>
+      <button id="updBtn" class="upd" hidden></button>
+      <span id="appVer" class="ver" title="Nhấp để kiểm tra cập nhật"></span>
       <span id="netTotal" class="net" hidden></span>
     </div>
   </aside>
-</div>
-
-<!-- phóng to toàn cửa sổ (khi không ghim màn lớn) -->
-<div id="focus" class="focus" hidden>
-  <div class="focus-head">
-    <span id="focusName"></span>
-    <span class="hint">Nhấp phải chỗ trống để thoát · trái = chạm · phải = quay lại · giữ phải = đa nhiệm · giữa = Home · Ctrl+←/→ = máy khác</span>
-    <div id="focusNav" class="navbar inline"></div>
-    <button id="focusClose">Đóng ✕</button>
-  </div>
-  <div id="focusStage" class="focus-stage"></div>
 </div>
 
 <div id="menu" class="menu" role="menu" hidden></div>
