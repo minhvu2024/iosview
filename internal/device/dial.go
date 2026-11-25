@@ -29,12 +29,16 @@ var ErrPortClosed = usbmux.ErrPortClosed
 
 // dialAttempt is one connection attempt (replaced in tests).
 var dialAttempt = func(ctx context.Context, addr string) (net.Conn, error) {
-	var dl net.Dialer
+	dl := net.Dialer{KeepAlive: 5 * time.Second}
 	return dl.DialContext(ctx, "tcp", addr)
 }
 
 func dialLAN(addr string, total time.Duration) (net.Conn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), total)
+	return dialLANContext(context.Background(), addr, total)
+}
+
+func dialLANContext(parent context.Context, addr string, total time.Duration) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(parent, total)
 	defer cancel()
 	type result struct {
 		c   net.Conn

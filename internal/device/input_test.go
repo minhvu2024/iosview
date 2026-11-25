@@ -177,6 +177,94 @@ func TestUIPrefsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWheelBatchesPressAndRelease(t *testing.T) {
+	m, f, d := oneDevice(t)
+	if n := m.Dispatch(d.ID, Wheel(0.5, 0.5, 0, true)); n != 1 {
+		t.Fatalf("targets = %d", n)
+	}
+	waitFor(t, "wheel events", func() bool { _, n := lastPtr(f); return n >= 2 })
+	p, _, _ := f.snapshot()
+	if p[0] != [3]int{8, 500, 1000} || p[1] != [3]int{0, 500, 1000} {
+		t.Fatalf("unexpected wheel sequence: %v", p)
+	}
+}
+
+func TestControlCenterGestureAndEmailClean(t *testing.T) {
+	m, f, d := oneDevice(t)
+	// 1000x2000 (aspect 2.0 >= 1.95) -> top-right Control Center swipe;
+	// also test 750x1334 Home-button bottom-edge swipe via a second fake VNC.
+	m.Dispatch(d.ID, Button("cc"))
+	waitFor(t, "cc release", func() bool { p, n := lastPtr(f); return n >= 6 && p[0] == 0 })
+
+	homePhone := newFakeVNC(t, 375, 667)
+	cfg2, _ := LoadConfig(filepath.Join(t.TempDir(), "c2.json"))
+	cfg2.WifiDevices = []string{homePhone.ln.Addr().String()}
+	m2 := NewManager(cfg2)
+	waitOnline(t, m2, 1)
+	id2 := "wifi:" + homePhone.ln.Addr().String()
+	m2.Dispatch(id2, Button("cc"))
+	waitFor(t, "home cc release", func() bool { p, n := lastPtr(homePhone); return n >= 6 && p[0] == 0 })
+	pts, _, _ := homePhone.snapshot()
+	if pts[0][2] != 666 {
+		t.Fatalf("Home-button Control Center must start at bottom pixel 666, got %v", pts[0])
+	}
+
+	// Zero-width BOM / ZWSP around an email must be stripped and typed cleanly.
+	if got := cleanInvisible("\ufeffuser\u200b@gmail.com\u2060"); got != "user@gmail.com" {
+		t.Fatalf("cleanInvisible = %q", got)
+	}
+}
+
+type timedPointerSession struct {
+	session
+	batches []time.Time
+}
+
+func (s *timedPointerSession) Size() (int, int)      { return 100, 100 }
+func (s *timedPointerSession) Done() <-chan struct{} { return nil }
+func (s *timedPointerSession) WritePointerBatch(p [][3]int) error {
+	s.batches = append(s.batches, time.Now())
+	return nil
+}
+
+func TestTouchBurstPacingNeverZeroDelta(t *testing.T) {
+	c := &timedPointerSession{}
+	d := &Device{held: &ptrState{}}
+	d.flush(c, []Event{Pointer(0.5, 0.6, 1), Pointer(0.5, 0.5, 1), Pointer(0.5, 0.5, 0)})
+	if len(c.batches) != 2 || c.batches[1].Sub(c.batches[0]) < liftSettleGap {
+		t.Fatalf("same batch move and lift were not paced: %v", c.batches)
+	}
+	c.batches = nil
+	d.flush(c, []Event{Pointer(0.5, 0.6, 1), Pointer(0.5, 0.5, 1)})
+	d.flush(c, []Event{Pointer(0.5, 0.5, 0)})
+	d.flush(c, []Event{Pointer(0.5, 0.5, 1), Pointer(0.5, 0.5, 0)})
+	if len(c.batches) != 3 {
+		t.Fatalf("tap or separately received lift was split: %v", c.batches)
+	}
+}
+
+func TestSetWifiListOrderAndRemove(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetWifiList([]string{"10.0.0.3", "10.0.0.1", "10.0.0.2"})
+	st := m.Snapshot()
+	if len(st.Devices) != 3 {
+		t.Fatalf("expected 3 devices, got %d", len(st.Devices))
+	}
+	wantOrder := []string{"10.0.0.3:1", "10.0.0.1:1", "10.0.0.2:1"}
+	for i, w := range wantOrder {
+		if st.Devices[i].Addr != w || st.Devices[i].No != i+1 {
+			t.Fatalf("pos %d: got addr=%s no=%d, want %s #%d", i, st.Devices[i].Addr, st.Devices[i].No, w, i+1)
+		}
+	}
+	// Reorder and drop 10.0.0.1
+	m.SetWifiList([]string{"10.0.0.2", "10.0.0.3"})
+	st = m.Snapshot()
+	if len(st.Devices) != 2 || st.Devices[0].Addr != "10.0.0.2:1" || st.Devices[0].No != 1 ||
+		st.Devices[1].Addr != "10.0.0.3:1" || st.Devices[1].No != 2 {
+		t.Fatalf("unexpected reordered snapshot: %+v", st.Devices)
+	}
+}
+
 // A cable phone is being dialed over its Wi-Fi address (cable not seen yet),
 // then the cable shows up and the session moves to USB. When the abandoned
 // Wi-Fi dial times out later it must not mark the working USB session failed.
@@ -260,5 +348,73 @@ func TestStartupPrefersCable(t *testing.T) {
 	}
 	if n := attemptsTo("192.0.2.9:5901"); n != 0 {
 		t.Fatalf("Wi-Fi dialed %d times although the cable is there", n)
+	}
+}
+
+func TestTouchKeepsOriginalTargets(t *testing.T) {
+	m, f, a := oneDevice(t)
+	b := newFakeVNC(t, 200, 200)
+	t.Cleanup(func() { b.ln.Close() })
+	m.AddWifi(b.ln.Addr().String())
+	waitOnline(t, m, 2)
+	targets := m.StartTouch(a.ID, false, Pointer(0.4, 0.4, 1))
+	if len(targets) != 2 {
+		t.Fatalf("press targets = %d, want 2", len(targets))
+	}
+	m.ApplySync(false)
+	m.ContinueTouch(targets, Pointer(0.6, 0.5, 0))
+	for _, phone := range []*fakeVNC{f, b} {
+		waitFor(t, "release on original phone", func() bool {
+			p, n := lastPtr(phone)
+			return n == 2 && p[0] == 0
+		})
+	}
+}
+
+func TestInvalidWifiListKeepsDevices(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.SetWifiList([]string{"10.0.0.2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetWifiList([]string{"10.0.0."}); err == nil {
+		t.Fatal("accepted incomplete IP")
+	}
+	if got := m.Snapshot().WifiDevices; len(got) != 1 || got[0] != "10.0.0.2:1" {
+		t.Fatalf("invalid edit replaced saved addresses: %v", got)
+	}
+}
+
+type blockedCloseSession struct {
+	session
+	started chan struct{}
+	unblock chan struct{}
+}
+
+func (c *blockedCloseSession) Close() error {
+	close(c.started)
+	<-c.unblock
+	return nil
+}
+
+func TestInputOverflowDoesNotBlockOtherPhones(t *testing.T) {
+	c := &blockedCloseSession{started: make(chan struct{}), unblock: make(chan struct{})}
+	defer close(c.unblock)
+	a := &Device{ID: "a", queue: make(chan Event, 1), cur: c}
+	b := &Device{ID: "b", queue: make(chan Event, 1)}
+	a.queue <- Pointer(0, 0, 1)
+	m := &Manager{}
+	go m.deliver("a", []*Device{a, b}, Pointer(0, 0, 0))
+	select {
+	case <-c.started:
+	case <-time.After(time.Second):
+		t.Fatal("overflow did not close the stalled session")
+	}
+	select {
+	case ev := <-b.queue:
+		if ev.Mask != 0 {
+			t.Fatal("release changed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stalled session blocked the other phone")
 	}
 }

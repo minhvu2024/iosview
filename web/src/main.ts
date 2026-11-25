@@ -16,7 +16,7 @@ type Dev = {
 };
 type Tag = { name: string; ids: string[] };
 type State = {
-  devices: Dev[]; tags: Tag[]; syncOn: boolean; usbError?: string; password: string;
+  devices: Dev[]; wifiDevices?: string[]; tags: Tag[]; syncOn: boolean; usbError?: string; password: string;
   quality: number; focusQuality: number; h264: boolean; vncPort: number; stripAccents: boolean;
 };
 
@@ -31,7 +31,6 @@ const WAILS = location.hostname === "wails.localhost";
 let state: State = { devices: [], tags: [], syncOn: true, password: "", quality: 5, focusQuality: 7, h264: true, vncPort: 5901, stripAccents: true };
 // Quality for grid tiles hidden behind the full-window view: still streaming
 // (so they come back instantly) but as cheap as possible for phone, Wi-Fi, PC.
-const BACKGROUND_QUALITY = 1;
 let pageHidden = false;       // app window minimised / in background
 const lsGet = (k: string) => { try { return localStorage.getItem(k) || ""; } catch { return ""; } };
 const lsSet = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
@@ -82,6 +81,7 @@ const IC: Record<string, string> = {
   refresh: `<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" />`,
   x: `<path d="M18 6 6 18" /><path d="m6 6 12 12" />`,
   trash: `<path d="M10 11v6" /><path d="M14 11v6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />`,
+  cc: `<line x1="21" x2="14" y1="4" y2="4" /><line x1="10" x2="3" y1="4" y2="4" /><line x1="21" x2="12" y1="12" y2="12" /><line x1="8" x2="3" y1="12" y2="12" /><line x1="21" x2="16" y1="20" y2="20" /><line x1="12" x2="3" y1="20" y2="20" /><line x1="14" x2="14" y1="2" y2="6" /><line x1="8" x2="8" y1="10" y2="14" /><line x1="16" x2="16" y1="18" y2="22" />`,
 };
 const ico = (n: string, vb = "0 0 24 24") => `<svg viewBox="${vb}">${IC[n]}</svg>`;
 
@@ -95,15 +95,26 @@ let offlineWarned = false;
 const outbox: string[] = [];
 // Realtime input is never queued: replaying it after a reconnect would fire
 // stale taps/drags on the phones. Only settings-type messages wait.
-const REALTIME = new Set(["p", "k", "text", "btn"]);
+const REALTIME = new Set(["p", "w", "k", "text", "btn"]);
 function send(m: { t: string; [k: string]: unknown }) {
   const s = JSON.stringify(m);
-  if (ws && ws.readyState === WebSocket.OPEN) { ws.send(s); return; }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(s);
+    if (REALTIME.has(m.t) && (m.t !== "p" || m.m === 0)) {
+      const source = typeof m.d === "string" ? tiles.get(m.d) : undefined;
+      const viewers = state.syncOn && !m.one && (!m.d || source?.dev.inSync) ? tiles.values() : source ? [source] : [];
+      for (const t of viewers) {
+        if ((t === source || t.dev.inSync) && t.rfb instanceof H264View) t.rfb.expectFrame();
+      }
+    }
+    return true;
+  }
   if (REALTIME.has(m.t)) {
     if (!offlineWarned) { offlineWarned = true; toast("Mất kết nối tới iOSView — thao tác bị bỏ qua"); }
-    return;
+    return false;
   }
   if (outbox.length < 50) outbox.push(s);
+  return false;
 }
 function connectControl() {
   const sock = new WebSocket(`ws://${WS_HOST}/ws/control`);
@@ -111,21 +122,25 @@ function connectControl() {
   sock.onopen = () => {
     controlEpoch++;
     offlineWarned = false;
+    sock.send(JSON.stringify({ t: "copyblank", on: prefs.copyBlank }));
     while (outbox.length) sock.send(outbox.shift()!);
+    if (wifiDirty) syncWifiFromInput();
   };
   sock.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.t === "state") applyState(m.state);
+    else if (m.t === "clipboardCopy") rememberCopy(m.copy);
+    else if (m.t === "textAck") textAcks.get(m.seq)?.(m.count);
+    else if (m.t === "wifi") finishWifi(m.seq, m.error);
     else if (m.t === "toast") toast(m.s);
-    else if (m.t === "clip") onPhoneClipboard(m.d, m.s);
-    else if (m.t === "scan") {
-      $("#scanBtn").removeAttribute("disabled");
-      toast(m.found?.length ? `Tìm thấy ${m.found.length} máy: ${m.found.join(", ")}` : "Không tìm thấy TrollVNC nào trong LAN");
-    }
   };
   sock.onclose = () => {
     if (ws !== sock) return;   // only one reconnect loop
     controlEpoch++;
+    wifiPending = 0;
+    for (const done of textAcks.values()) done(null);
+    lastGroupCopy = null;
+    lastCopySeq = 0;
     setTimeout(connectControl, 1000);
   };
 }
@@ -174,16 +189,19 @@ class Tile {
   fps = 0;
   bps = 0;
   visible = true;
+  occluded = false;       // completely hidden underneath the floating big screen
   wantQuality = state.quality;
   wantProfile: Profile = { fps: VIDEO_DEF.gf, pct: VIDEO_DEF.gs };
   retry = 0;
   retryTimer = 0;
+  hasPicture = false;     // true once a frame was drawn during this online session
   pw = "";
 
   constructor(dev: Dev) {
     this.dev = dev;
     this.el = document.createElement("section");
     this.el.className = "tile";
+    tileByEl.set(this.el, this);
     this.el.innerHTML = `
       <div class="t-head" title="Nhấp: chọn / bỏ chọn · Nhấp đúp hoặc ⤢: mở màn lớn · Chuột phải: menu">
         <span class="badge"></span><span class="no" title="Nhấp đúp để đổi số máy"></span><span class="name" title="Nhấp đúp để đổi tên (F2)"></span><span class="dot"></span><button class="t-big" title="Mở màn lớn">${ico("expand")}</button>
@@ -251,10 +269,14 @@ class Tile {
       this.host.style.setProperty("--ar", ar);
     }
     if (dev.status !== "online") {
+      this.hasPicture = false;
+      this.host.classList.remove("live");
+      this.view.querySelector("canvas.h264")?.remove();
       this.msg.textContent = dev.status === "connecting" ? "Đang kết nối…" : (dev.error || "Mất kết nối");
+    } else if (!this.hasPicture) {
+      this.msg.textContent = "Đang mở hình…";
     }
     if (dev.status === "online" && was !== "online") this.retry = 0;
-    if (this.pw !== state.password && this.rfb) { this.disconnect(); }
     this.paint();
     this.sync();
   }
@@ -288,30 +310,37 @@ class Tile {
   // without the iOSView H.264 patch), fall back to VNC for this device.
   connectH264() {
     this.wantProfile = desiredProfile(this);
-    const v = new H264View(this.view, `ws://${WS_HOST}/ws/h264/${encodeURIComponent(this.dev.id)}`, this.wantQuality, this.wantProfile);
+    if (!this.hasPicture) this.msg.textContent = "Đang mở hình…";
+    const v = new H264View(this.view, `ws://${WS_HOST}/ws/h264/${encodeURIComponent(this.dev.id)}`, this.wantQuality, this.wantProfile, this.dev.kind === "cd");
     v.onframe = () => { if (this.rfb === v) this.frames++; };
     v.onbytes = (n) => { if (this.rfb === v) this.bytes += n; };
-    v.paused = !!fullTile && fullTile !== this;   // hidden behind the full-window view
-    v.onfirst = () => { clearTimeout(this.firstTimer); this.host.classList.add("live"); this.retry = 0; };
+    v.paused = isBackgrounded(this);   // hidden behind full-window or floating big screen
+    v.onfirst = () => { clearTimeout(this.firstTimer); this.hasPicture = true; this.host.classList.add("live"); this.retry = 0; };
     v.onclose = () => {
-      clearTimeout(this.firstTimer);
-      this.host.classList.remove("live");
       if (this.rfb !== v) return;
+      clearTimeout(this.firstTimer);
       this.rfb = null;
-      // Every phone has H.264: whatever went wrong (Wi-Fi hiccup, agent
-      // restart…), just reconnect the same stream with a short backoff.
+      // Keep the last drawn frame on canvas while the phone itself is still
+      // online, so stream hiccups / heavy-video resets never flash black.
+      if (this.dev.status !== "online" || !this.hasPicture) {
+        this.host.classList.remove("live");
+      } else {
+        this.host.classList.remove("live");
+        this.msg.textContent = "Đang nối lại hình…";
+      }
       if (this.dev.status === "online") {
-        const wait = Math.min(500 * 2 ** this.retry++, 5000);
+        const wait = Math.min(300 * 2 ** this.retry++, 3000) + Math.round(Math.random() * 250);
         this.retryTimer = window.setTimeout(() => { this.retryTimer = 0; this.sync(); }, wait);
       }
     };
     clearTimeout(this.firstTimer);
-    // stream connected but no picture: reconnect it
-    this.firstTimer = window.setTimeout(() => { if (this.rfb === v && !v.gotFrame) v.disconnect(); }, 8000);
+    // stream connected (or connecting) but no picture: reconnect it
+    this.firstTimer = window.setTimeout(() => { if (this.rfb === v && !v.decodedFrame) v.disconnect(); }, this.dev.kind === "cd" ? 20000 : 6000);
     this.rfb = v;
   }
 
   connectVNC() {
+    this.view.querySelector("canvas.h264")?.remove();
     this.pw = state.password;
     const url = `ws://${WS_HOST}/ws/vnc/${encodeURIComponent(this.dev.id)}`;
     const rfb = new RFB(this.view, url, { shared: true, credentials: { password: state.password }, wsProtocols: ["binary"] });
@@ -361,6 +390,8 @@ class Tile {
     this.fps = this.frames / dt; this.bps = this.bytes / dt;
     this.frames = 0; this.bytes = 0;
     this.stat.hidden = !prefs.stats || !this.rfb;
+    const timing = this.rfb instanceof H264View ? this.rfb.timingSummary(!this.stat.hidden && !this.rfb.paused) : "";
+    if (this.nameEl.title !== timing) this.nameEl.title = timing;
     if (!this.stat.hidden) {
       const r = this.rfb;
       const p = this.wantProfile;
@@ -371,8 +402,11 @@ class Tile {
   }
 
   disconnect() {
+    clearTimeout(this.firstTimer);
     const r = this.rfb; this.rfb = null;
-    this.host.classList.remove("live");
+    if (this.dev.status !== "online" || !this.hasPicture) {
+      this.host.classList.remove("live");
+    }
     if (r) try { r.disconnect(); } catch { /* already closed */ }
   }
 
@@ -397,9 +431,10 @@ class Tile {
 }
 
 const tiles = new Map<string, Tile>();
+const tileByEl = new WeakMap<Element, Tile>();
 const io = new IntersectionObserver((entries) => {
   for (const e of entries) {
-    const t = [...tiles.values()].find((t) => t.el === e.target);
+    const t = tileByEl.get(e.target);
     if (!t) continue;
     t.visible = e.isIntersecting;
     // pause off-screen viewers after a grace period to save CPU/bandwidth
@@ -502,23 +537,25 @@ function layout() {
   }
   const st = $("#stage");
   st.hidden = !staged;
-  if (staged) sizeStage(staged);
+  if (staged) sizeStage(staged, false);
   const opening = !!staged && !stageOpen;
-  if (opening) { st.getAnimations().forEach((a) => a.cancel()); stageMotion(true, staged); }
+  if (opening) st.getAnimations().forEach((a) => a.cancel());
+  const motion = opening ? stageMotion(true, staged) : null;
   stageOpen = !!staged;
   for (const t of tiles.values()) {
     t.paint(); t.sync();
-    if (opening && t === staged) {   // new size/bitrate (and its keyframe) only after the motion, so it never stutters
-      setTimeout(() => { if (stagedTile() === t) { t.setQuality(desiredQuality(t)); t.setProfile(desiredProfile(t)); } }, MOTION_MS);
+    if (motion && t === staged) {   // Avoid a profile-change keyframe during the animation.
+      void motion.then(() => { if (stagedTile() === t) { t.setProfile(desiredProfile(t)); t.setQuality(desiredQuality(t)); } });
     } else { t.setQuality(desiredQuality(t)); t.setProfile(desiredProfile(t)); }
-    // tiles covered by the full-window view: decode but don't draw
-    if (t.rfb instanceof H264View) t.rfb.paused = !!fullTile && fullTile !== t;
+    // Covered tiles pause rendering on the PC without retuning the phone.
+    if (t.rfb instanceof H264View) t.rfb.paused = isBackgrounded(t);
   }
+  updateOcclusion();
   renderStageCap();
   renderTags();
 }
 
-function sizeStage(t: Tile) {
+function sizeStage(t: Tile, checkOcc = true) {
   const app = $(".app");
   const avail = app.clientHeight - 24 - 6 - 30 - 24 - 34;  // padding, top border, nav bar, caption, toolbar
   const w0 = t.dev.width || 750, h0 = t.dev.height || 1334;
@@ -532,13 +569,39 @@ function sizeStage(t: Tile) {
   st.style.width = (w + 12) + "px";
   st.style.right = maxBig ? "" : ($("#ctrl").offsetWidth + 24) + "px";   // floats just left of the control panel
   st.style.left = maxBig ? Math.max(0, Math.round((app.clientWidth - (w + 12)) / 2)) + "px" : "";   // centred when maximized
+  if (checkOcc) updateOcclusion();
   renderStageCap();
 }
 { const ro = new ResizeObserver(() => { const s = stagedTile(); if (s) sizeStage(s); }); ro.observe($(".app")); ro.observe($("#ctrl")); }
 
+function isBackgrounded(t: Tile) {
+  return isSmall(t) && (!!fullTile || t.occluded);
+}
+
+// Only pause tiles completely covered by the floating stage. Keep their phone
+// encoders at the same profile so revealing them never rebuilds the encoder.
+let occRaf = 0;
+function updateOcclusion() {
+  const floating = prefs.big && !maxBig && !$("#stage").hidden;
+  const sr = floating ? $("#stageScreen").getBoundingClientRect() : null;
+  for (const t of tiles.values()) {
+    let occ = false;
+    if (sr && sr.width > 0 && t.visible && !t.el.hidden && isSmall(t)) {
+      const r = t.el.getBoundingClientRect();
+      occ = r.width > 0 && r.left >= sr.left && r.right <= sr.right && r.top >= sr.top && r.bottom <= sr.bottom;
+    }
+    if (occ === t.occluded) continue;
+    t.occluded = occ;
+    if (t.rfb instanceof H264View) t.rfb.paused = isBackgrounded(t);
+  }
+}
+grid.addEventListener("scroll", () => {
+  if (!prefs.big || maxBig || occRaf) return;
+  occRaf = requestAnimationFrame(() => { occRaf = 0; updateOcclusion(); });
+}, { passive: true });
+
 function desiredQuality(t: Tile) {
-  if (fullTile) return fullTile === t ? state.focusQuality : Math.min(BACKGROUND_QUALITY, state.quality);
-  return stagedTile() === t ? state.focusQuality : state.quality;
+  return isBig(t) ? state.focusQuality : state.quality;
 }
 
 // ---------------------------------------------------------------- H.264 frame rate & size
@@ -601,7 +664,7 @@ function toggleSel(ids: string[], on?: boolean) {
   for (const d of devs) d.inSync = val;              // optimistic, server confirms
   send({ t: "group", ids: devs.map((d) => d.id), on: val });
   for (const t of tiles.values()) t.paint();
-  renderTags(); renderFooter();
+  renderTags(); renderFooter(); renderButtons();
 }
 
 function passesFilter(d: Dev) {
@@ -618,44 +681,81 @@ function passesFilter(d: Dev) {
 }
 
 // ---------------------------------------------------------------- state
+let receivedState = false;
 function applyState(s: State) {
+  const first = !receivedState;
+  receivedState = true;
+  const previous = state;
   const pwChanged = s.password !== state.password || s.h264 !== state.h264;
   s.tags = s.tags || [];
   s.devices = s.devices || [];   // no phone yet: the agent sends null
   state = s;
   const seen = new Set<string>();
   let order = 0;
+  let stageChanged = false;
+  let countsChanged = first || s.devices.length !== previous.devices.length;
+  let tagCellsChanged = countsChanged;
+  let needsLayout = s.devices.length !== previous.devices.length ||
+    JSON.stringify(s.tags) !== JSON.stringify(previous.tags);
   for (const d of s.devices) {
     seen.add(d.id);
     let t = tiles.get(d.id);
     if (!t) {
+      countsChanged = tagCellsChanged = true;
       t = new Tile(d);
       tiles.set(d.id, t);
       io.observe(t.el);
-    } else t.update(d);
-    t.el.style.order = String(order++);
+    } else if (Object.keys(d).some((key) => d[key as keyof Dev] !== t?.dev[key as keyof Dev]) ||
+               Object.keys(t.dev).length !== Object.keys(d).length) {
+      const old = t.dev;
+      if (old.inSync !== d.inSync || (old.status === "online") !== (d.status === "online")) countsChanged = true;
+      if (old.name !== d.name || old.vncName !== d.vncName || old.no !== d.no) tagCellsChanged = true;
+      if (isBig(t)) {
+        stageChanged = true;
+        if (d.width !== t.dev.width || d.height !== t.dev.height) needsLayout = true;
+      }
+      if ((old.name !== d.name || old.vncName !== d.vncName) &&
+          Object.keys({ ...old, ...d }).every(k => k === "name" || k === "vncName" || old[k as keyof Dev] === d[k as keyof Dev])) {
+        t.dev = d;
+        if (t.nameEl.isConnected) t.nameEl.textContent = t.label();
+      } else t.update(d);
+    }
+    const index = String(order++);
+    if (t.el.style.order !== index) { t.el.style.order = index; needsLayout = true; }
     if (t.el.parentElement !== grid) grid.appendChild(t.el);
     if (pwChanged) { t.disconnect(); t.sync(); }
   }
   for (const [id, t] of tiles) {
     if (seen.has(id)) continue;
+    needsLayout = true;
     io.unobserve(t.el);
     t.destroy(); tiles.delete(id);
   }
   // first run: the first phone becomes the main phone
   if (!masterId() && s.devices.length) { prefs.master = s.devices[0].id; lsSet("iosview.master", prefs.master); }
-  if (prefs.tag && !s.tags.some((x) => x.name === prefs.tag)) prefs.tag = "";
+  if (prefs.tag && !s.tags.some((x) => x.name === prefs.tag)) { prefs.tag = ""; needsLayout = true; }
 
-  $("#empty").hidden = s.devices.length > 0;
-  const warn = $("#usbWarn");
-  warn.hidden = !s.usbError;
-  warn.textContent = s.usbError ? "USB: " + s.usbError : "";
-  $('[data-tab="conn"]').classList.toggle("alert", !!s.usbError);
-  $('[data-tab="conn"]').title = s.usbError ? "Có lỗi kết nối USB — xem chi tiết" : "";
-  renderButtons();
-  syncSliders();
-  layout();
-  renderFooter();
+  if (first || previous.devices.length !== s.devices.length) $("#empty").hidden = s.devices.length > 0;
+  if (first || previous.usbError !== s.usbError) {
+    const warn = $("#usbWarn");
+    warn.hidden = !s.usbError;
+    warn.textContent = s.usbError ? "USB: " + s.usbError : "";
+    const connTab = $('[data-tab="conn"]');
+    connTab.classList.toggle("alert", !!s.usbError);
+    connTab.title = s.usbError ? "Có lỗi kết nối USB — xem chi tiết" : "";
+  }
+  if (countsChanged || s.syncOn !== previous.syncOn) renderButtons();
+  if (first || s.quality !== previous.quality || s.focusQuality !== previous.focusQuality) syncSliders();
+  if (first || s.vncPort !== previous.vncPort || JSON.stringify(s.wifiDevices) !== JSON.stringify(previous.wifiDevices)) fillWifi();
+  if (needsLayout || pwChanged) layout();
+  else {
+    if (s.syncOn !== previous.syncOn) for (const t of tiles.values()) t.paint();
+    if (s.quality !== previous.quality || s.focusQuality !== previous.focusQuality)
+      for (const t of tiles.values()) t.setQuality(desiredQuality(t));
+    if (stageChanged) renderStageCap();
+    if (tagCellsChanged || countsChanged) renderTags();
+  }
+  if (countsChanged) renderFooter();
 }
 
 function renderFooter() {
@@ -745,6 +845,7 @@ const STAGE_FNS: Fn[] = [
   { k: "#paste", label: "Dán từ PC", icon: "paste", kbd: "Ctrl+V" },
   { k: "selectall", label: "Chọn hết chữ", icon: "selectall" },
   { k: "clear", label: "Xoá ô nhập", icon: "clear", kbd: "Ctrl+⌫" },
+  { k: "cc", label: "Cài đặt nhanh", icon: "cc" },
   { k: "mute", label: "Tắt / bật tiếng", icon: "mute" },
   { k: "#shot", label: "Chụp màn hình", icon: "shot" },
   { k: "#full", label: "Toàn cửa sổ (bấm lại để về cỡ thường)", icon: "full" },
@@ -759,7 +860,7 @@ onPress($("#stageTools"), (e) => {
   setActive(t);
   const k = b.dataset.fn!;
   if (k === "#rename") renameDevice(t.dev.id);
-  else if (k === "#paste") pasteFromPC(t.dev.id);
+  else if (k === "#paste") pasteFromPC(t.dev.id, { one: e.altKey });
   else if (k === "#shot") shoot([t]);
   else if (k === "#full") toggleMax(t);
   else if (k === "#close") closeBig();
@@ -808,6 +909,7 @@ function openMenu(id: string, x: number, y: number) {
     : `<button data-m="master">${ico("expand")}Mở màn lớn</button>`;
   h += `<button data-m="sel">${ico(d.inSync ? "none" : "all")}${d.inSync ? "Bỏ chọn" : "Chọn"} (nhóm đồng bộ)</button>`;
   h += `<button data-m="full">${ico("full")}Toàn cửa sổ</button>`;
+  h += `<button data-m="cc">${ico("cc")}Mở Cài đặt nhanh</button>`;
   h += `<button data-m="shot">${ico("shot")}Chụp màn hình</button>`;
   const vo = ui.video?.dev?.[id];
   h += `<button data-m="video">${ico("full")}Hình riêng cho máy này…${vo ? `<kbd>${vo.f}fps ${vo.s}%</kbd>` : ""}</button>`;
@@ -839,6 +941,7 @@ $("#menu").onclick = (e) => {
     case "number": renumber(id); break;
     case "sel": toggleSel([id]); break;
     case "full": toggleMax(t); break;
+    case "cc": navPress(t, "cc"); break;
     case "shot": shoot([t]); break;
     case "video": videoOverride(id); break;
     case "remove": send({ t: "remove", d: id }); break;
@@ -851,7 +954,7 @@ window.addEventListener("blur", () => { $("#menu").hidden = true; });
 let tagsKey = "";
 function renderTags() {
   const ids = state.devices.map((d) => d.id);
-  const key = JSON.stringify([state.devices.map((d) => [d.id, d.no, d.name, d.inSync, d.status === "online"]), state.tags, masterId(), prefs.big, prefs.tag]);
+  const key = JSON.stringify([state.devices.map((d) => [d.id, d.no, d.name, d.vncName, d.inSync, d.status === "online"]), state.tags, masterId(), prefs.big, prefs.tag]);
   if (key === tagsKey) return;
   tagsKey = key;
   const byId = new Map(state.devices.map((d) => [d.id, d]));
@@ -986,25 +1089,15 @@ function norm(t: Tile, e: { clientX: number; clientY: number }) {
   return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height, inside: e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom };
 }
 
-// Tiles that will receive an action started on tile `t` (for visual echo).
-function echoTargets(t: Tile): Tile[] {
-  if (state.syncOn && t.dev.inSync) return [...tiles.values()].filter((x) => x.dev.inSync && x.dev.status === "online");
-  return [t];
-}
-
-function ripple(targets: Tile[], x: number, y: number, kind = "") {
-  for (const t of targets) {
-    const c = t.canvas();
-    if (!c || !t.host.isConnected) continue;
-    const hr = t.host.getBoundingClientRect(), cr = screenRect(c);
-    if (!cr.width) continue;
-    const dot = document.createElement("i");
-    dot.className = "ripple " + kind;
-    dot.style.left = `${cr.left - hr.left + x * cr.width}px`;
-    dot.style.top = `${cr.top - hr.top + y * cr.height}px`;
-    t.host.appendChild(dot);
-    setTimeout(() => dot.remove(), 450);
-  }
+function ripple(t: Tile, cr: { left: number; top: number; width: number; height: number }, x: number, y: number) {
+  if (!cr.width || !t.host.isConnected) return;
+  const hr = t.host.getBoundingClientRect();
+  const dot = document.createElement("i");
+  dot.className = "ripple";
+  dot.style.left = `${cr.left - hr.left + x * cr.width}px`;
+  dot.style.top = `${cr.top - hr.top + y * cr.height}px`;
+  t.host.appendChild(dot);
+  setTimeout(() => dot.remove(), 450);
 }
 
 // Mouse on a phone screen (docs/SHORTCUTS.md): left = touch, middle = Home,
@@ -1022,6 +1115,8 @@ function navPress(t: Tile, b: string, one = false) {
 function isSmall(t: Tile) { return t.host.parentElement === t.slot; }
 
 let twoFingerWarned = false;
+// Cap pointermove fan-out at ~60Hz (iPhone display rate) even on 144/240Hz PC monitors.
+const MOVE_INTERVAL_MS = 1000 / 60;
 
 function bindInput(t: Tile) {
   const ov = t.overlay;
@@ -1029,23 +1124,53 @@ function bindInput(t: Tile) {
   let epoch = 0;              // controlEpoch when the current gesture began
   let solo = false;           // gesture started with Alt: this phone only
   let lastWheel = 0;
-  let pending: { x: number; y: number } | null = null;
-  let raf = 0;
+  let dragRect: { left: number; top: number; width: number; height: number } | null = null;
+  let moveClient: { clientX: number; clientY: number } | null = null;
+  let lastMoveAt = 0;
+  let nextMoveAt = 0;
+  let lastSentX = 0.5;
+  let lastSentY = 0.5;
+  let edgeSteps = 0;
+  let moveTimer = 0;
   let holdTimer = 0;          // right button press-and-hold → app switcher
   let holdOne = false;
   const id = () => t.dev.id;
   // Control link changed since this gesture began: drop it. Returns true
   // when there is no live gesture.
   const stale = () => {
-    if (mask && epoch !== controlEpoch) { mask = 0; pending = null; }
+    if (mask && epoch !== controlEpoch) { mask = 0; moveClient = null; dragRect = null; edgeSteps = 0; }
     return !mask;
   };
-  const sendPtr = (x: number, y: number) =>
-    send({ t: "p", d: id(), x: +Math.min(1, Math.max(0, x)).toFixed(4), y: +Math.min(1, Math.max(0, y)).toFixed(4), m: mask, one: solo || undefined });
+  const normCached = (ev: { clientX: number; clientY: number }) => {
+    if (dragRect && dragRect.width && dragRect.height) {
+      return { x: (ev.clientX - dragRect.left) / dragRect.width, y: (ev.clientY - dragRect.top) / dragRect.height };
+    }
+    return norm(t, ev);
+  };
+  const sendPtr = (x: number, y: number) => {
+    const cx = +Math.min(1, Math.max(0, x)).toFixed(4);
+    const cy = +Math.min(1, Math.max(0, y)).toFixed(4);
+    lastSentX = cx;
+    lastSentY = cy;
+    send({ t: "p", d: id(), x: cx, y: cy, m: mask, one: solo || undefined });
+  };
   const flushMove = () => {
-    raf = 0;
-    if (pending && !stale()) sendPtr(pending.x, pending.y);
-    pending = null;
+    moveTimer = 0;
+    if (!moveClient || stale()) { moveClient = null; return; }
+    const now = performance.now();
+    const minInterval = edgeSteps > 0 ? 8 : MOVE_INTERVAL_MS;
+    if (now < nextMoveAt) {
+      moveTimer = window.setTimeout(flushMove, Math.ceil(nextMoveAt - now));
+      return;
+    }
+    const p = normCached(moveClient);
+    moveClient = null;
+    if (p) {
+      if (edgeSteps > 0) edgeSteps--;
+      lastMoveAt = now;
+      nextMoveAt = Math.max(nextMoveAt + minInterval, now + minInterval / 2);
+      sendPtr(p.x, p.y);
+    }
   };
   const cancelHold = () => { clearTimeout(holdTimer); holdTimer = 0; };
 
@@ -1062,8 +1187,19 @@ function bindInput(t: Tile) {
       else if (e.button === 2) closeBig();
       return;
     }
-    const p = norm(t, e);
-    if (!p || !p.inside) return;
+    const c = t.canvas();
+    if (!c || (t.hasPicture && !(t.rfb instanceof H264View ? t.rfb.gotFrame : t.rfb))) return;
+    const r = screenRect(c);
+    if (!r.width || !r.height) return;
+    if (e.clientX < r.left - 2 || e.clientX > r.right + 2 || e.clientY < r.top - 2 || e.clientY > r.bottom + 3) return;
+    let px = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    let py = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    // Snap presses in the bottom/top 2.8% rim right to the physical edge so
+    // swiping up opens Control Center (while a plain tap still hits UITabBar).
+    if (py >= 0.972) py = 1;
+    else if (py <= 0.018) py = 0;
+    if (px <= 0.018) px = 0;
+    else if (px >= 0.982) px = 1;
     e.preventDefault();
     setActive(t);
     if (e.button === 1) { navPress(t, "home", e.altKey); return; }
@@ -1078,18 +1214,29 @@ function bindInput(t: Tile) {
     if (e.shiftKey && !twoFingerWarned) { twoFingerWarned = true; toast("Điều khiển hai ngón (Shift) chưa hỗ trợ — đang chạm một ngón"); }
     ov.setPointerCapture(e.pointerId);
     stale();
+    clearTimeout(moveTimer);
+    moveTimer = 0;
     if (!mask) { epoch = controlEpoch; solo = e.altKey; }
+    dragRect = r;
+    moveClient = null;
+    edgeSteps = (px === 0 || px === 1 || py === 0 || py === 1) ? 3 : 0;
+    lastMoveAt = performance.now();
+    nextMoveAt = lastMoveAt;
     mask |= 1;
-    sendPtr(p.x, p.y);
-    ripple(solo ? [t] : echoTargets(t), p.x, p.y);
+    sendPtr(px, py);
+    // Ripple only on the touched tile so follower canvases keep their direct GPU overlay path.
+    ripple(t, r, px, py);
   });
   ov.addEventListener("pointermove", (e) => {
     if (stale()) return;
-    const p = norm(t, e);
-    if (!p) return;
-    pending = { x: p.x, y: p.y };
-    // send at display rate; the agent coalesces further if a phone lags
-    if (!raf) raf = requestAnimationFrame(flushMove);
+    moveClient = { clientX: e.clientX, clientY: e.clientY };
+    // Send as soon as the input interval allows, independent of canvas rendering.
+    if (performance.now() >= nextMoveAt) {
+      clearTimeout(moveTimer);
+      flushMove();
+    } else if (!moveTimer) {
+      flushMove();
+    }
   });
   const up = (e: PointerEvent) => {
     if (e.button === 2 && holdTimer) {   // right click released: Back (unless the hold fired)
@@ -1100,10 +1247,38 @@ function bindInput(t: Tile) {
     }
     if (stale()) return;
     if (e.type === "pointerup" && e.button !== 0) return;
-    if (raf) { cancelAnimationFrame(raf); flushMove(); }
-    const p = norm(t, e) || { x: 0.5, y: 0.5 };
+    clearTimeout(moveTimer);
+    moveTimer = 0;
+    const now = performance.now();
+    const raw = normCached(e) || { x: lastSentX, y: lastSentY };
+    const cx = Math.min(1, Math.max(0, raw.x));
+    const cy = Math.min(1, Math.max(0, raw.y));
+    const rectW = dragRect?.width || 1;
+    const rectH = dragRect?.height || 1;
+    const twitchPx = Math.hypot((cx - lastSentX) * rectW, (cy - lastSentY) * rectH);
+    // If the user paused (>=45ms) before releasing — e.g. resting on a birthday
+    // picker wheel row — ignore <=3px button-release micro-twitch so UIScrollView
+    // does not launch into an unintended fling.
+    if (now - lastMoveAt >= 45 && twitchPx <= 3) {
+      moveClient = null;
+      dragRect = null;
+      edgeSteps = 0;
+      mask = 0;
+      sendPtr(lastSentX, lastSentY);
+      return;
+    }
+    if (moveClient) {
+      const pt = normCached(moveClient);
+      moveClient = null;
+      if (pt) {
+        const movePx = Math.hypot((pt.x - lastSentX) * rectW, (pt.y - lastSentY) * rectH);
+        if (movePx > 1.5) sendPtr(pt.x, pt.y);
+      }
+    }
+    dragRect = null;
+    edgeSteps = 0;
     mask = 0;
-    sendPtr(p.x, p.y);
+    sendPtr(cx, cy);
   };
   ov.addEventListener("pointerup", up);
   ov.addEventListener("pointercancel", (e) => { cancelHold(); up(e); });
@@ -1118,10 +1293,8 @@ function bindInput(t: Tile) {
     if (!p) return;
     setActive(t);
     stale();
-    const bit = e.deltaY < 0 ? 8 : 16;
     const one = e.altKey || undefined;
-    send({ t: "p", d: id(), x: +p.x.toFixed(4), y: +p.y.toFixed(4), m: bit | mask, one });
-    send({ t: "p", d: id(), x: +p.x.toFixed(4), y: +p.y.toFixed(4), m: mask, one });
+    send({ t: "w", d: id(), x: +p.x.toFixed(4), y: +p.y.toFixed(4), m: mask, down: e.deltaY < 0, one });
   }, { passive: false });
 }
 
@@ -1236,133 +1409,125 @@ window.addEventListener("paste", (e) => {
   const pt = tiles.get(d);
   if (pt) setActive(pt);
   const one = document.body.classList.contains("solo");   // Alt held: this phone only
-  if (!one && splitPaste(d, text)) return;
+  if (!one && splitPaste(text)) return;
   pasteText(d, text, { one });
 });
 
-// Several lines pasted while at least two phones are selected: line 1 → the
-// lowest-numbered selected phone, line 2 → the next… (one account per phone).
-// One rule, no hidden conditions: it applies whether the sync switch is on or
-// off and whichever phone the mouse is on (d = "" is the toolbar's "whole
-// group" target). The order counts offline phones too, so a missing phone
-// never shifts the lines. Returns false when this does not apply (single
-// line, fewer than two phones selected): the caller pastes the text as usual.
-function splitPaste(_d: string, text: string, force = false): boolean {
-  const lines = text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-  const group = state.devices.filter((x) => x.inSync).sort((a, b) => a.no - b.no);
-  if (lines.length < 2 || group.length < 2) return false;
-  const notes: string[] = [];
-  let sent = 0;
-  group.forEach((dev, i) => {
-    if (i >= lines.length) return;
-    if (dev.status !== "online") { notes.push(`Máy ${pad(dev.no)} offline — dòng ${i + 1} chưa dán`); return; }
-    send({ t: "text", d: dev.id, s: lines[i], f: force || undefined, one: true, quiet: true });
-    sent++;
+type ClipboardCopy = { seq: number; text: string; parts: { id: string; text: string; read: boolean }[] };
+let lastGroupCopy: ClipboardCopy | null = null;
+let lastCopySeq = 0;
+function rememberCopy(copy: ClipboardCopy) {
+  if (copy.seq <= lastCopySeq) return;
+  lastCopySeq = copy.seq;
+  lastGroupCopy = copy.parts?.length > 1 ? copy : null;
+}
+let textSeq = 0;
+const textAcks = new Map<number, (count: number | null) => void>();
+
+function queueText(d: string, text: string, opt: { force?: boolean; one?: boolean }): Promise<number | null> {
+  return new Promise((resolve) => {
+    const seq = ++textSeq;
+    const timer = window.setTimeout(() => textAcks.get(seq)?.(null), 3000);
+    const done = (count: number | null) => {
+      clearTimeout(timer);
+      textAcks.delete(seq);
+      resolve(count);
+    };
+    textAcks.set(seq, done);
+    if (!send({ t: "text", d, s: text, f: opt.force, one: opt.one, seq })) done(0);
   });
-  if (lines.length > group.length) {
-    const a = group.length + 1, b = lines.length;
-    notes.push(`${b} dòng / ${group.length} máy — dòng ${a === b ? a : `${a}–${b}`} không dán`);
-  } else if (lines.length < group.length) {
-    notes.push(`${lines.length} dòng / ${group.length} máy — ${group.length - lines.length} máy cuối không nhận`);
+}
+
+// Preserve row positions, including blank rows and offline phones. A copy
+// made by iOSView also retains the exact device IDs and multiline values.
+function splitPaste(text: string, force = false): boolean {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const group = state.devices.filter((d) => d.inSync).sort((a, b) => a.no - b.no || a.id.localeCompare(b.id));
+  const copy = lastGroupCopy;
+  if (copy && normalized === copy.text.replace(/\r\n/g, "\n")) {
+    const devices = new Map(state.devices.map((d) => [d.id, d]));
+    const entries = copy.parts.filter((part) => part.read && part.text !== "");
+    void sendPasteRows(entries.map((part) => ({
+      id: part.id, text: part.text, device: devices.get(part.id),
+    })), force, 0);
+    return true;
   }
-  toast(notes.length ? `Đã dán ${sent} dòng · ` + notes.join(" · ") : `Đã chia ${sent} dòng cho ${sent} máy`);
+  if (copy) lastGroupCopy = null;
+  const lines = normalized.split("\n");
+  if (lines.length < 2 || group.length < 2) return false;
+  const rows = group.slice(0, lines.length).flatMap((device, i) => lines[i] === "" ? [] : [
+    { id: device.id, text: lines[i], device },
+  ]);
+  const extra = lines.slice(group.length).filter((line) => line !== "").length;
+  void sendPasteRows(rows, force, extra);
   return true;
+}
+
+async function sendPasteRows(rows: { id: string; text: string; device?: Dev }[], force: boolean, extra: number) {
+  const results = await Promise.all(rows.map(async ({ id, text, device }) => ({
+    device, count: device?.status === "online" ? await queueText(id, text, { force, one: true }) : 0,
+  })));
+  const sent = results.filter(({ count }) => count === 1).length;
+  const failed = results.filter(({ count }) => count !== 1);
+  const notes = failed.map(({ device, count }) => {
+    const name = device ? `Máy ${pad(device.no)}` : "Máy đã bị xoá";
+    return `${name} ${count === null ? "chưa xác nhận" : "chưa nhận lệnh"}`;
+  });
+  if (extra) notes.push(`${extra} dòng không có máy tương ứng`);
+  if (!sent && !notes.length) { toast("Không có dữ liệu để dán"); return; }
+  toast([`Đã xếp lệnh dán cho ${sent} máy`, ...notes].join(" · "));
 }
 
 function pasteText(d: string, text: string, opt: { force?: boolean; one?: boolean } = {}) {
   if (!text) { toast("Clipboard của PC đang trống (chỉ hỗ trợ văn bản)"); return; }
-  send({ t: "text", d, s: text, f: opt.force || undefined, one: opt.one || undefined });
-  if (opt.force) { toast("Dán cưỡng bức: đang gõ từng phím (bỏ dấu)…"); return; }
-  // ASCII is typed straight in; text with dấu tiếng Việt / emoji can't be typed
-  // on an iOS HID keyboard, so it goes via clipboard and needs a tap on Paste.
-  if (/[^\x00-\x7f]/.test(text)) {
-    toast(state.stripAccents
-      ? "Đang gõ (đã bỏ dấu tiếng Việt)…"
-      : "Văn bản có dấu đã nạp vào clipboard máy — chạm “Paste” trên iPhone để dán");
-  } else toast("Đang gõ vào máy…");
+  send({ t: "text", d, s: text, f: opt.force, one: opt.one });
 }
 async function pasteFromPC(d: string, opt: { force?: boolean; one?: boolean } = {}) {
   try {
     const text = await navigator.clipboard.readText();
-    if (!opt.one && splitPaste(d, text, opt.force)) return;
+    if (!opt.one && splitPaste(text, opt.force)) return;
     pasteText(d, text, opt);
   }
   catch { toast("Không đọc được clipboard — trỏ chuột vào iPhone rồi bấm Ctrl+V"); }
 }
 
-// Collect actual clipboard events from a group copy; never fill missing phones
-// with cached text from an earlier copy.
-let phoneCopy: { devices: Dev[]; texts: Map<string, string>; timer: number } | null = null;
-function copyDevices() {
-  const selected = state.devices.some((d) => d.inSync);
-  return state.devices.filter((d) => selected ? d.inSync : d.status === "online").slice()
-    .sort((a, b) => a.no - b.no || a.id.localeCompare(b.id));
-}
-function cancelPhoneCopy() {
-  if (phoneCopy) clearTimeout(phoneCopy.timer);
-  phoneCopy = null;
-}
-function onPhoneClipboard(id: string, text: string) {
-  if (!document.hasFocus() || copyingPhones) return;
-  const devices = phoneCopy?.devices || copyDevices();
-  if (!devices.some((d) => d.id === id)) return;
-  if (!phoneCopy) {
-    phoneCopy = { devices: devices.map((d) => ({ ...d })), texts: new Map(), timer: window.setTimeout(finishPhoneCopy, 2000) };
-  }
-  phoneCopy.texts.set(id, text);
-  if (phoneCopy.devices.every((d) => d.status !== "online" || phoneCopy!.texts.has(d.id))) finishPhoneCopy();
-}
-function finishPhoneCopy() {
-  const batch = phoneCopy;
-  if (!batch) return;
-  cancelPhoneCopy();
-  if (!document.hasFocus() || copyingPhones) return;
-  const text = batch.devices.map((d) => batch.texts.get(d.id) ?? "").join(prefs.copyBlank ? "\n\n" : "\n");
-  void writePCClipboard(text);
-}
-
-// Ctrl+C uses the phone's last received clipboard, or requests it when unknown.
+// Ctrl+C reads phones on the Go backend and writes directly to the OS clipboard
+// (Win32 API) so copies never miss when switching windows.
 async function copyFromPhones() {
   if (copyingPhones) return;
-  cancelPhoneCopy();
   copyingPhones = true;
   try {
     const res = await fetch("/api/copy?blank=" + (prefs.copyBlank ? "1" : "0"), { method: "POST" });
-    if (!res.ok) return;
-    const { text } = await res.json();
-    if (text && document.hasFocus()) await writePCClipboard(text);
-  } catch { /* Copy stays silent, including when the agent is unavailable. */ }
+    if (!res.ok) {
+      toast((await res.json()).error || "Không copy được từ iPhone");
+      return;
+    }
+    const result = await res.json() as ClipboardCopy;
+    rememberCopy(result);
+    const missed = result.parts?.filter((part) => !part.read).length ?? 0;
+    if (missed) toast(`${missed} máy chưa trả clipboard. Đã giữ vị trí các máy này.`);
+  } catch { toast("Không copy được từ iPhone"); }
   finally { copyingPhones = false; }
-}
-
-async function writePCClipboard(text: string): Promise<boolean> {
-  try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back */ }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed"; ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  } catch { return false; }
 }
 
 // ---------------------------------------------------------------- screenshots
 async function shoot(list: Tile[]) {
-  const live = list.filter((t) => t.canvas() && t.host.classList.contains("live"));
+  const live = list.filter((t) => t.canvas() && t.host.classList.contains("live") && (t.rfb instanceof H264View ? t.rfb.gotFrame : t.rfb));
   if (!live.length) { toast("Máy chưa có hình để chụp"); return; }
   let saved = 0, last = "";
-  for (const t of live) {
-    const c = t.canvas()!;
+  await Promise.all(live.map(async (t) => {
+    const c = t.canvas();
+    if (!c) return;
     const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/png"));
-    if (!blob) continue;
+    if (!blob) return;
+    const ac = new AbortController();
+    const timer = window.setTimeout(() => ac.abort(), 5000);
     try {
-      const res = await fetch(`/api/shot?d=${encodeURIComponent(t.dev.id)}`, { method: "POST", body: blob });
+      const res = await fetch(`/api/shot?d=${encodeURIComponent(t.dev.id)}`, { method: "POST", body: blob, signal: ac.signal });
       if (res.ok) { saved++; last = (await res.json()).path || ""; }
     } catch { /* ignore */ }
-  }
+    finally { clearTimeout(timer); }
+  }));
   toast(saved ? (saved === 1 ? `Đã lưu ảnh: ${last}` : `Đã lưu ${saved} ảnh vào thư mục screenshots`) : "Không lưu được ảnh chụp");
 }
 
@@ -1430,21 +1595,25 @@ function onBtn(e: MouseEvent) {
       return;
     }
   }
-  const d = groupTarget();
-  if (d === null) return;
-  if (k === "paste") pasteFromPC(d);
+  const d = k === "paste" && e.altKey ? keyTarget() || groupTarget() : groupTarget();
+  if (d === null || (k === "paste" && e.altKey && !d)) return;
+  if (k === "paste") pasteFromPC(d, { one: e.altKey });
   else send({ t: "btn", d, b: k });
 }
 onPress($("#btns"), onBtn);
 onPress($("#viewBtns"), onBtn);
-$("#textForm").onsubmit = (e) => {
+$("#textForm").onsubmit = async (e) => {
   e.preventDefault();
   const inp = $<HTMLInputElement>("#textInput");
   if (!inp.value) return;
   const d = groupTarget();
   if (d === null) return;
-  send({ t: "text", d, s: inp.value });
-  inp.value = "";
+  const text = inp.value;
+  const count = await queueText(d, text, {});
+  if (count) {
+    if (inp.value === text) inp.value = "";
+    toast(`Đã xếp lệnh gửi văn bản cho ${count} máy`);
+  } else toast(count === null ? "Chưa nhận được xác nhận gửi" : "Chưa gửi được văn bản");
 };
 
 // sliders
@@ -1503,23 +1672,83 @@ document.querySelectorAll<HTMLElement>(".tabs [data-tab]").forEach((b) => {
     document.querySelectorAll(".tabs [data-tab]").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
     document.querySelectorAll<HTMLElement>("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== b.dataset.tab; });
     if (b.dataset.tab === "set") fillSettings();
+    if (b.dataset.tab === "conn") fillWifi(true);
   };
 });
 
-// connection tab
-$("#scanBtn").onclick = () => {
-  $("#scanBtn").setAttribute("disabled", "");
-  toast("Đang quét mạng LAN…");
-  send({ t: "scan" });
-};
-$("#wifiForm").onsubmit = (e) => {
-  e.preventDefault();
-  const ta = $<HTMLTextAreaElement>("#wifiAddr");
-  const list = ta.value.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
-  if (!list.length) return;
-  for (const a of list) send({ t: "addwifi", s: a });
-  ta.value = "";
-  toast(`Đã thêm ${list.length} địa chỉ Wi‑Fi`);
+// connection tab: ordered Wi-Fi IP list (one IP per line, auto-applied & saved)
+function fmtWifiAddr(addr: string) {
+  const def = ":" + (state.vncPort || 5901);
+  return /^\d+(?:\.\d+){3}:/.test(addr) && addr.endsWith(def) ? addr.slice(0, -def.length) : addr;
+}
+function parseWifiLines(raw: string): { list: string[]; invalid: number } {
+  const list = new Set<string>();
+  const lines = raw.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const value = lines[i].trim();
+    if (!value) continue;
+    const match = /^(?:(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?|([a-zA-Z0-9.-]+):(\d{1,5})|\[([a-fA-F0-9:]+)\]:(\d{1,5}))$/.exec(value);
+    const port = match?.[2] ?? match?.[4] ?? match?.[6];
+    if (!match || match[1]?.split(".").some((octet) => +octet > 255 || String(+octet) !== octet) ||
+        (port !== undefined && (+port < 1 || +port > 65535))) return { list: [], invalid: i + 1 };
+    list.add(value);
+  }
+  return { list: [...list], invalid: 0 };
+}
+const wifiAddrEl = $<HTMLTextAreaElement>("#wifiAddr");
+let wifiTimer = 0;
+let wifiPending = 0;
+let wifiSeq = 0;
+let wifiDirty = false;
+let wifiSubmitted = "";
+let wifiAckTimer = 0;
+function fillWifi(force = false) {
+  if (wifiDirty || (!force && document.activeElement === wifiAddrEl)) return;
+  const value = (state.wifiDevices || []).map(fmtWifiAddr).join("\n");
+  if (wifiAddrEl.value !== value) wifiAddrEl.value = value;
+}
+function finishWifi(seq: number, error?: string) {
+  if (seq !== wifiPending) return;
+  wifiPending = 0;
+  clearTimeout(wifiAckTimer);
+  if (error) { toast(error); return; }
+  if (wifiAddrEl.value === wifiSubmitted) wifiDirty = false;
+  else syncWifiFromInput();
+}
+function syncWifiFromInput() {
+  if (!wifiDirty || wifiPending) return;
+  const { list, invalid } = parseWifiLines(wifiAddrEl.value);
+  wifiAddrEl.setAttribute("aria-invalid", String(!!invalid));
+  $("#wifiError").textContent = invalid ? `Kiểm tra địa chỉ IP hoặc cổng ở dòng ${invalid}.` : "";
+  if (invalid) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    toast("Mất kết nối tới iOSView — danh sách Wi‑Fi chưa lưu");
+    return;
+  }
+  wifiPending = ++wifiSeq;
+  wifiSubmitted = wifiAddrEl.value;
+  const seq = wifiPending;
+  send({ t: "setwifi", ids: list, seq });
+  clearTimeout(wifiAckTimer);
+  wifiAckTimer = window.setTimeout(() => finishWifi(seq, "Chưa nhận được xác nhận lưu danh sách Wi-Fi"), 8000);
+}
+wifiAddrEl.addEventListener("input", () => {
+  wifiDirty = true;
+  clearTimeout(wifiTimer);
+  wifiTimer = window.setTimeout(syncWifiFromInput, 350);
+});
+wifiAddrEl.addEventListener("blur", () => {
+  clearTimeout(wifiTimer);
+  syncWifiFromInput();
+});
+$("#clearWifiBtn").onclick = () => {
+  const count = (state.wifiDevices || []).length;
+  if (!count && !wifiAddrEl.value.trim()) { toast("Chưa có máy Wi‑Fi nào"); return; }
+  if (!window.confirm("Ngắt kết nối và xoá toàn bộ địa chỉ Wi‑Fi đã nhập?")) return;
+  clearTimeout(wifiTimer);
+  wifiAddrEl.value = "";
+  wifiDirty = true;
+  syncWifiFromInput();
 };
 
 // settings tab
@@ -1528,6 +1757,7 @@ copyBlank.checked = prefs.copyBlank;
 copyBlank.onchange = () => {
  prefs.copyBlank = copyBlank.checked;
  lsSet("iosview.copyblank", prefs.copyBlank ? "1" : "0");
+ send({ t: "copyblank", on: prefs.copyBlank });
 };
 function fillSettings() {
   $<HTMLInputElement>("#setPw").value = state.password;
@@ -1699,7 +1929,7 @@ window.addEventListener("click", (e) => {
 }, true);
 function tileOf(el: Element | null): Tile | undefined {
   const te = el?.closest(".tile");
-  return te ? [...tiles.values()].find((t) => t.el === te) : undefined;
+  return te ? tileByEl.get(te) : undefined;
 }
 function onGridScrollbar(e: MouseEvent) {
   const r = grid.getBoundingClientRect();
@@ -2052,6 +2282,20 @@ function toast(s: string) {
   toastTimer = window.setTimeout(() => (el.hidden = true), 3200);
 }
 
+// ---------------------------------------------------------------- theme (Graphite & Paper / Carbon Dark)
+const themeBtn = $("#themeBtn");
+let curTheme: "light" | "dark" = lsGet("iosview.theme") === "dark" ? "dark" : "light";
+function applyTheme(next: "light" | "dark", save = true) {
+  curTheme = next;
+  document.documentElement.dataset.theme = next;
+  if (save) lsSet("iosview.theme", next);
+  themeBtn.innerHTML = ico(next === "dark" ? "sun" : "moon");
+  themeBtn.title = next === "dark" ? "Chuyển sang Graphite & Paper (sáng)" : "Chuyển sang Carbon Dark (tối)";
+  themeBtn.setAttribute("aria-label", themeBtn.title);
+}
+applyTheme(curTheme, false);
+onPress(themeBtn, () => applyTheme(curTheme === "dark" ? "light" : "dark"), true);
+
 renderButtons();
 connectControl();
 // ---------------------------------------------------------------- Wails window chrome
@@ -2073,11 +2317,13 @@ if (WAILS) {
     `<button id="tbClose" class="tb-close" title="Đóng"><svg viewBox="0 0 10 10"><path d="M2 2l6 6M8 2l-6 6"/></svg></button>` +
     `</div>`;
   document.body.prepend(tb);
-  // the panel's brand header would repeat the title bar: its one remaining
-  // control (collapse the panel) moves up here
+  // Move theme toggle and panel collapse controls up to the Wails title bar
   const cb = $("#collapseBtn");
   cb.classList.add("tb-panel");
-  tb.querySelector(".tb-btns")!.prepend(cb);
+  themeBtn.classList.add("tb-theme");
+  const tbBtns = tb.querySelector(".tb-btns")!;
+  tbBtns.prepend(cb);
+  tbBtns.prepend(themeBtn);
   type WailsWin = { Minimise(): void; ToggleMaximise(): void; Close(): void };
   const win = () => (window as unknown as { wails?: { Window: WailsWin } }).wails?.Window;
   $("#tbMin").onclick = () => win()?.Minimise();

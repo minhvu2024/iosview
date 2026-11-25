@@ -8,6 +8,7 @@ await build({
   minify: true, sourcemap: false, outfile: "dist/app.js", legalComments: "eof",
 });
 copyFileSync("src/index.html", "dist/index.html");
+copyFileSync("src/tokens.css", "dist/tokens.css");
 copyFileSync("src/style.css", "dist/style.css");
 copyFileSync("src/icon.svg", "dist/icon.svg");
 copyFileSync("src/icon.png", "dist/icon.png");

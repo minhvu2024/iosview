@@ -8,22 +8,29 @@ import (
 // Input event kinds sent to a device.
 const (
 	evPointer = iota
+	evWheel
 	evKey
 	evText
 	evButton
 )
 
+// Minimum gap enforced ONLY when a drag's final Move and Lift arrive in the
+// same batch (0 ms apart), preventing UIScrollView/UIPickerView velocity spikes
+// without adding latency to taps or live dragging.
+const liftSettleGap = 8 * time.Millisecond
+
 // Event is one input action, with coordinates normalised to 0..1 so the same
 // event maps correctly onto phones with different resolutions.
 type Event struct {
-	Kind   int
-	X, Y   float64
-	Mask   uint8
-	Keysym uint32
-	Down   bool
-	Text   string
-	Button string
-	Force  bool // evText: always type it (accents stripped), whatever the setting
+	Kind     int
+	X, Y     float64
+	Mask     uint8
+	Keysym   uint32
+	Down     bool
+	Text     string
+	Button   string
+	Force    bool // evText: always type it (accents stripped), whatever the setting
+	Follower bool // sync-group follower (not the phone directly under the cursor)
 }
 
 // Hardware button keysyms / masks understood by TrollVNC.
@@ -55,6 +62,10 @@ func toPx(n float64, size int) int {
 	return int(math.Round(clamp01(n) * float64(size-1)))
 }
 
+func isEdgeNorm(x, y float64) bool {
+	return x <= 0.03 || x >= 0.97 || y <= 0.03 || y >= 0.97
+}
+
 // runWriter drains the event queue for one device. Consecutive pointer moves
 // with the same button mask are coalesced into the newest one when the
 // device falls behind, so latency never accumulates; presses, releases and
@@ -64,6 +75,8 @@ func (d *Device) runWriter(c session) {
 	// down: its release never reached the phone. Lift it before anything else.
 	if d.held.mask != 0 && c.PointerEvent(0, d.held.x, d.held.y) == nil {
 		d.held.mask = 0
+		d.held.moved = false
+		d.held.edge = false
 	}
 	for {
 		select {
@@ -103,18 +116,57 @@ func (d *Device) flush(c session, batch []Event) {
 		switch ev.Kind {
 		case evPointer:
 			// Skip a pure move (mask unchanged) when the next event is another
-			// move with the same mask. Press/release events are always sent at
-			// their own position, so a drag starts exactly where the finger
-			// went down (matters for edge swipes).
-			if ev.Mask == d.held.mask && i+1 < len(batch) {
-				n := batch[i+1]
-				if n.Kind == evPointer && n.Mask == ev.Mask {
-					continue
+			// move with the same mask, EXCEPT keep the very first move of an
+			// edge gesture so Control Center / Back swipes preserve their
+			// initial edge-exit trajectory.
+			if ev.Mask != 0 && ev.Mask == d.held.mask && i+1 < len(batch) {
+				if !(d.held.edge && !d.held.moved) {
+					n := batch[i+1]
+					if n.Kind == evPointer && n.Mask == ev.Mask {
+						continue
+					}
 				}
 			}
-			x, y := toPx(ev.X, w), toPx(ev.Y, h)
+
+			nx, ny := clamp01(ev.X), clamp01(ev.Y)
+			wasDown := d.held.mask != 0
+			nowDown := ev.Mask != 0
+
+			if nowDown && !wasDown {
+				d.held.edge = isEdgeNorm(nx, ny)
+				d.held.moved = false
+			}
+
+			x, y := toPx(nx, w), toPx(ny, h)
+			if nowDown && wasDown && x == d.held.x && y == d.held.y {
+				continue
+			}
+
+			// Only separate a drag's final Move and Lift when both landed in the
+			// same batch (0 ms apart), so UIPickerView never sees infinite release
+			// velocity while normal taps and live dragging pay zero sleep cost.
+			if !nowDown && wasDown && d.held.moved && len(ptr) > 0 {
+				flushPtr()
+				time.Sleep(liftSettleGap)
+			}
+
+			if nowDown && wasDown {
+				d.held.moved = true
+			} else if !nowDown {
+				d.held.moved = false
+				d.held.edge = false
+			}
+
 			ptr = append(ptr, [3]int{int(ev.Mask), x, y})
-			*d.held = ptrState{ev.Mask, x, y}
+			d.held.mask, d.held.x, d.held.y, d.held.at = ev.Mask, x, y, time.Now()
+		case evWheel:
+			x, y := toPx(ev.X, w), toPx(ev.Y, h)
+			bit := 16
+			if ev.Down {
+				bit = 8
+			}
+			ptr = append(ptr, [3]int{int(ev.Mask) | bit, x, y}, [3]int{int(ev.Mask), x, y})
+			d.held.mask, d.held.x, d.held.y, d.held.at = ev.Mask, x, y, time.Now()
 		case evKey:
 			flushPtr()
 			_ = c.KeyEvent(ev.Keysym, ev.Down)
@@ -178,6 +230,35 @@ func (d *Device) pressButton(c session, b string, w, h int) {
 		}
 		time.Sleep(16 * time.Millisecond)
 		_ = c.PointerEvent(0, int(0.70*float64(w)), y)
+	case "cc":
+		// Control Center: Home-button iPhones (~16:9) swipe up from the bottom
+		// edge; FaceID/Notch iPhones (~19.5:9) swipe down from top-right.
+		longSide, shortSide := h, w
+		if w > h {
+			longSide, shortSide = w, h
+		}
+		notch := shortSide > 0 && longSide*100/shortSide >= 195
+		if notch || d.IsCD() {
+			x := toPx(0.86, w)
+			steps := []float64{0, 0.015, 0.045, 0.10, 0.18, 0.28, 0.38}
+			_ = c.PointerEvent(maskTouch, x, toPx(steps[0], h))
+			for _, f := range steps[1:] {
+				time.Sleep(14 * time.Millisecond)
+				_ = c.PointerEvent(maskTouch, x, toPx(f, h))
+			}
+			time.Sleep(35 * time.Millisecond)
+			_ = c.PointerEvent(0, x, toPx(steps[len(steps)-1], h))
+		} else {
+			x := toPx(0.50, w)
+			steps := []float64{1.0, 0.988, 0.96, 0.91, 0.82, 0.68, 0.52, 0.38}
+			_ = c.PointerEvent(maskTouch, x, toPx(steps[0], h))
+			for _, f := range steps[1:] {
+				time.Sleep(14 * time.Millisecond)
+				_ = c.PointerEvent(maskTouch, x, toPx(f, h))
+			}
+			time.Sleep(35 * time.Millisecond)
+			_ = c.PointerEvent(0, x, toPx(steps[len(steps)-1], h))
+		}
 	case "siri":
 		tap(maskHome, 1200*time.Millisecond)
 	case "volup":

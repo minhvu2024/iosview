@@ -1,0 +1,14 @@
+Origin: iOSView Claude
+Label: iOSView Claude
+Suite: stable
+Version: 1.0
+Codename: ios
+Architectures: iphoneos-arm64e
+Components: main
+Description: TrollVNC RootHide 3.3-1004 (commit Claude)
+MD5Sum:
+ 5a4552407cb2357de1845101c7a2c8c8 585 Packages
+ b033e3d6aeb30a743af8faa4a41dbd81 419 Packages.gz
+SHA256:
+ 53cb56dd7d89edd1e96512c61f1db9bfeaadea2b7b4096191090654881f05c33 585 Packages
+ c11bbb329f262e495fcf1b594c75ed4d2ebbec40274be33cb01f55dabbf9e7d5 419 Packages.gz

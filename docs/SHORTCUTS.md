@@ -66,4 +66,4 @@ Phím đã đổi, cụm từ nhanh và ghi chú được lưu trong `iosview.js
 | Gõ phím, Enter, Tab, mũi tên… | Gõ khi trỏ chuột vào máy |
 | Tải lại cửa sổ | `F5` |
 
-- **Ctrl+C** (app đang focus, ngoài ô nhập): copy clipboard các iPhone đang chọn, hoặc tất cả máy online nếu không chọn; chỉ lấy dữ liệu theo thứ tự máy trong lưới; công tắc Cài đặt → Dòng trống giữa dữ liệu copy chọn cách ngăn giữa hai dữ liệu. Lỗi/timeout 2 giây để trống. Bản này hỗ trợ TrollVNC.
+- **Ctrl+C** (app đang focus, ngoài ô nhập): copy clipboard các iPhone đang chọn, hoặc tất cả máy online nếu không chọn; chỉ lấy dữ liệu theo thứ tự máy trong lưới; công tắc Cài đặt → Dòng trống giữa dữ liệu copy chọn cách ngăn giữa hai dữ liệu. Mỗi máy có 800 ms để trả dữ liệu. Máy lỗi để trống dòng nếu có máy khác trả dữ liệu. Bản này hỗ trợ TrollVNC.

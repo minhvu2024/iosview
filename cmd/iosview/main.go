@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"io/fs"
 	"log"
@@ -66,13 +67,21 @@ func main() {
 		ln, err = net.Listen("tcp", cfg.Listen)
 	}
 	if err != nil {
-		// Already running? Just bring up another window on it.
-		if c, e := http.Get(url + "/api/state"); e == nil {
-			c.Body.Close()
-			if !runWindow(winOpts{URL: url, Version: version, Mica: *mica}) {
-				openBrowser(url)
+		// Use the running agent's version for a second window on the same port.
+		client := &http.Client{Timeout: 2 * time.Second}
+		if response, probeErr := client.Get(url + "/api/version"); probeErr == nil {
+			var agent struct{ Version string }
+			decodeErr := json.NewDecoder(response.Body).Decode(&agent)
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK && decodeErr == nil && agent.Version != "" {
+				if agent.Version != version {
+					log.Printf("cổng %s đang dùng iOSView %s, bản vừa mở là %s", cfg.Listen, agent.Version, version)
+				}
+				if !runWindow(winOpts{URL: url, Version: agent.Version, Mica: *mica}) {
+					openBrowser(url)
+				}
+				return
 			}
-			return
 		}
 		log.Fatalf("không mở được %s: %v", cfg.Listen, err)
 	}

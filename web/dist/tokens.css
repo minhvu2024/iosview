@@ -1,0 +1,176 @@
+/* ==========================================================================
+   iOSView Design System — Reusable Design Tokens
+   Themes:
+     - Graphite & Paper (default, data-theme="light"): calm neutral light
+     - Carbon Dark      (data-theme="dark")          : low-glare charcoal dark
+   Philosophy: 95% neutral surfaces & ink, 1px hairlines, flat controls,
+   high contrast type (>= 4.5:1 muted, >= 12:1 primary), zero neon glow.
+   ========================================================================== */
+
+@font-face {
+  font-family: "Inter";
+  src: url(inter.woff2) format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  /* Typography */
+  --font-sans: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-md: 13px;
+  --fs-lg: 14.5px;
+  --fs-xl: 17px;
+  --lh-tight: 1.2;
+  --lh-base: 1.45;
+
+  /* Spacing scale (4px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+
+  /* Radii */
+  --r-xs: 5px;
+  --r-sm: 7px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-tile: 14px;
+  --r-pill: 999px;
+
+  /* Motion */
+  --ease: 80ms cubic-bezier(.2, .7, .3, 1);
+
+  /* Layout defaults */
+  --tile-w: 150px;
+  --panel-w: 296px;
+}
+
+/* ---------------- Theme 1: Graphite & Paper (Light, Default) ---------------- */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg-canvas: #ECEEF0;
+  --bg-surface: #F9FAFB;
+  --bg-subtle: #F0F2F4;
+  --bg-hover: #E6E9ED;
+  --bg-elevated: #FFFFFF;
+  --bg-input: #FFFFFF;
+
+  /* Borders (1px hairlines) */
+  --border: #DCDFE4;
+  --border-strong: #C2C8D0;
+
+  /* Text */
+  --text: #141619;
+  --text-2: #4B525B;
+  --text-3: #68707A;
+
+  /* Primary neutral accent */
+  --accent: #181A1D;
+  --accent-hover: #292D33;
+  --accent-ink: #F9FAFB;
+  --accent-soft: #E6E9EE;
+  --accent-border: #B5BCC6;
+
+  /* Semantic status (reserved for small indicators only) */
+  --status-online: #1F9D68;
+  --status-wifi: #2B6CB0;
+  --status-warn: #B47514;
+  --status-warn-bg: #FEF5E3;
+  --status-danger: #C9353B;
+
+  /* Title bar & Brand header */
+  --tb-bg: #181A1D;
+  --tb-ink: #F3F4F6;
+  --tb-border: rgba(255, 255, 255, .08);
+  --tb-hover: rgba(255, 255, 255, .12);
+
+  /* Device tile & stage frames */
+  --frame-idle: #3A3F45;
+  --frame-idle-ink: #DCE0E5;
+  --frame-sel: #181A1D;
+  --frame-sel-ink: #F9FAFB;
+  --frame-sel-ring: #181A1D;
+  --frame-paused: #D3D7DD;
+  --frame-paused-ink: #272B30;
+  --screen-bg: #0D0F11;
+
+  /* Switches & controls */
+  --sw-track: #C5CBD3;
+  --sw-knob: #FFFFFF;
+
+  /* Elevation (calm neutral shadows, zero color glow) */
+  --shadow-sm: 0 1px 2px rgba(15, 20, 25, .06);
+  --shadow-md: 0 8px 24px rgba(15, 20, 25, .10);
+  --shadow-tile: 0 2px 8px rgba(15, 20, 25, .14);
+  --shadow-stage: 0 16px 40px rgba(15, 20, 25, .24);
+  --focus-ring: 0 0 0 2px rgba(24, 26, 29, .22);
+}
+
+/* ---------------- Theme 2: Carbon Dark (Low-glare Charcoal) ---------------- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg-canvas: #141618;
+  --bg-surface: #1B1E21;
+  --bg-subtle: #23272B;
+  --bg-hover: #2C3136;
+  --bg-elevated: #22262A;
+  --bg-input: #16191C;
+
+  /* Borders */
+  --border: #2D3238;
+  --border-strong: #434B54;
+
+  /* Text */
+  --text: #EAECEF;
+  --text-2: #A2AAB3;
+  --text-3: #7A838E;
+
+  /* Primary neutral accent */
+  --accent: #EAECEF;
+  --accent-hover: #FFFFFF;
+  --accent-ink: #141618;
+  --accent-soft: #2A2F35;
+  --accent-border: #4D5661;
+
+  /* Semantic status */
+  --status-online: #2EA874;
+  --status-wifi: #5B9CE6;
+  --status-warn: #D99B38;
+  --status-warn-bg: #2D2415;
+  --status-danger: #E25B60;
+
+  /* Title bar & Brand header */
+  --tb-bg: #101214;
+  --tb-ink: #EAECEF;
+  --tb-border: #25292E;
+  --tb-hover: rgba(255, 255, 255, .10);
+
+  /* Device tile & stage frames */
+  --frame-idle: #22262A;
+  --frame-idle-ink: #B7BFC8;
+  --frame-sel: #2E343B;
+  --frame-sel-ink: #F5F7F9;
+  --frame-sel-ring: #C8D0D8;
+  --frame-paused: #23282D;
+  --frame-paused-ink: #97A0AA;
+  --screen-bg: #08090A;
+
+  /* Switches & controls */
+  --sw-track: #3C434B;
+  --sw-knob: #141618;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .32);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, .48);
+  --shadow-tile: 0 3px 10px rgba(0, 0, 0, .38);
+  --shadow-stage: 0 18px 48px rgba(0, 0, 0, .62);
+  --focus-ring: 0 0 0 2px rgba(234, 236, 239, .24);
+}

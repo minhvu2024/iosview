@@ -17,6 +17,8 @@
 #import <fcntl.h>
 #import <netinet/in.h>
 #import <netinet/tcp.h>
+#import <os/lock.h>
+#import <stdlib.h>
 #import <sys/socket.h>
 #import <unistd.h>
 
@@ -28,8 +30,9 @@
 #import "Logging.h"
 
 // A client that is this many frames behind gets its backlog dropped and
-// waits for the next keyframe (keeps latency bounded on slow Wi-Fi).
-static const int kMaxQueuedPerClient = 3;
+// waits for the next keyframe. Sized to absorb normal multi-phone Wi-Fi
+// burst jitter (~130-260 ms) without triggering synchronized keyframe storms.
+static const int kMaxQueuedPerClient = 8;
 // Encoder backlog limit: newest frame wins, older ones are skipped.
 static const int kMaxInFlight = 2;
 static const int kPoolThreshold = 6;
@@ -42,6 +45,7 @@ static const int kPoolThreshold = 6;
     dispatch_queue_t sendQ;
     dispatch_source_t readSrc;
     std::atomic<int> pending;
+    std::atomic<unsigned> sendGeneration;
     BOOL needKey;
     BOOL closed;
     uint8_t inbuf[8];
@@ -56,9 +60,9 @@ static const int kPoolThreshold = 6;
 
 static int gPort = 0;
 static int gBitrateKbps = 2500;
-static int gMaxFps = 60;     // current stream frame rate (main thread)
+static int gMaxFps = 60;     // current stream frame rate (gEncQ)
 static int gDefaultFps = 60; // configured rate, restored when no client is left
-static int gScalePct = 100;  // encoded size in % of the screen (main thread)
+static int gScalePct = 100;  // encoded size in % of the screen (gEncQ)
 static TVH264RotationFn gRotFn = NULL;
 static void (^gClientsChanged)(int) = nil;
 static void (^gFpsChanged)(int) = nil;
@@ -69,12 +73,24 @@ static dispatch_source_t gListenSrc;
 static NSMutableArray<TVH264Client *> *gClients;
 static std::atomic<int> gClientCount(0);
 
-// Requests from the network side to the encoder (main thread).
+// Latest captured pixel buffer hand-off from ScreenCapturer (main) to gEncQ,
+// coalescing frames so main returns immediately and HID injection never stalls.
+static os_unfair_lock gCaptureLock = OS_UNFAIR_LOCK_INIT;
+static CVPixelBufferRef gCapturedPB = NULL;
+static BOOL gCaptureScheduled = NO;
+
+// Requests from the network side to the encoder (gEncQ).
 static std::atomic<bool> gWantKey(false);
 static std::atomic<int> gNewBitrateKbps(0);
+static std::atomic<bool> gNeedDecoderReset(false); // set bit2 on next keyframe after session rebuild
+static std::atomic<bool> gShuttingDown(false);
+static std::atomic<uint64_t> gSessionGen(0); // prevents duplicate recoverFromEncoderError for the same session
 
-// Encoder state: main thread only (the VT callback only touches atomics).
+// Encoder state: owned by gEncQ (the VT callback only touches atomics).
+static dispatch_queue_t gEncQ;
 static VTCompressionSessionRef gSession = NULL;
+static BOOL gUsingLowLatency = NO;
+static BOOL gForceStandardRC = NO; // sticky fallback when LowLatency RC faults on A11 heavy video
 static int gEncW = 0, gEncH = 0;
 static CVPixelBufferPoolRef gPool = NULL;
 static IOSurfaceAcceleratorRef gAccel = NULL;
@@ -83,10 +99,18 @@ static CVPixelBufferRef gPendingPB = NULL; // newest captured frame not yet enco
 static CVPixelBufferRef gLastPB = NULL;    // last frame sent to the encoder
 static BOOL gPumpScheduled = NO;
 static CFTimeInterval gLastEncodeAt = 0;
+static CFTimeInterval gLastKeyWakeAt = -100;
 static CFTimeInterval gSessionFailedAt = -100;
+static CFTimeInterval gRetryEncoderAt = -100;
+static unsigned gEncoderFailures = 0;
+static std::atomic<bool> gEncoderProduced(false);
 static uint64_t gGeneration = 0;
 static int gRefinesLeft = 0;
 static std::atomic<int> gInFlight(0);
+static std::atomic<unsigned> gCaptureCount(0);
+// Remaining diagnostic counters belong to gEncQ.
+static unsigned gCopies, gSupersededCopies, gCpuCopies, gEncodeCalls;
+static CFTimeInterval gLastStats;
 
 static void pumpEncoder(void);
 
@@ -128,15 +152,20 @@ static void setPB(CVPixelBufferRef *slot, CVPixelBufferRef pb) {
     *slot = pb;
 }
 
-#pragma mark - Encoder (main thread)
+#pragma mark - Encoder (gEncQ)
+
+static BOOL ensureSession(int w, int h);
 
 static void teardownEncoder(void) {
     if (gSession) {
-        // Drain pending output callbacks first so none run after gInFlight is reset.
-        VTCompressionSessionCompleteFrames(gSession, kCMTimeInvalid);
-        VTCompressionSessionInvalidate(gSession);
-        CFRelease(gSession);
+        VTCompressionSessionRef s = gSession;
         gSession = NULL;
+        gShuttingDown.store(true);
+        // Invalidate cancels in-flight frames immediately without trying to flush
+        // a malfunctioning AppleAVE2 session, and waits for active callbacks.
+        VTCompressionSessionInvalidate(s);
+        CFRelease(s);
+        gShuttingDown.store(false);
     }
     if (gPool) {
         CVPixelBufferPoolRelease(gPool);
@@ -148,6 +177,38 @@ static void teardownEncoder(void) {
     gInFlight.store(0);
 }
 
+static void recoverFromEncoderError(OSStatus errCode) {
+    static int sRecLogs = 0;
+    if (sRecLogs++ < 12)
+        TVLog(@"H264: encoder error %d (lowLatency=%d) — rebuilding session", (int)errCode, (int)gUsingLowLatency);
+    if (gUsingLowLatency)
+        gForceStandardRC = YES; // A11 / iOS 16 faults under heavy video with LowLatency RC: stay on standard RC
+    int w = gEncW, h = gEncH;
+    CVPixelBufferRef last = gLastPB ? CVPixelBufferRetain(gLastPB) : NULL;
+    teardownEncoder();
+    if (gEncoderProduced.exchange(false))
+        gEncoderFailures = 0;
+    // Never retry inline: persistent EncodeFrame errors can recurse through
+    // pumpEncoder() and take down the daemon.
+    unsigned shift = MIN(gEncoderFailures, 4u);
+    if (gEncoderFailures < 5)
+        gEncoderFailures++;
+    double delay = 0.25 * (1u << shift);
+    gRetryEncoderAt = CACurrentMediaTime() + delay;
+    gWantKey.store(true);
+    if (last) {
+        CFTimeInterval retry = gRetryEncoderAt;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), gEncQ, ^{
+            if (!gSession && gRetryEncoderAt == retry && gClientCount.load() > 0 && w > 0 && h > 0 &&
+                CACurrentMediaTime() >= retry && ensureSession(w, h)) {
+                setPB(&gPendingPB, last);
+                pumpEncoder();
+            }
+            CVPixelBufferRelease(last);
+        });
+    }
+}
+
 static void applyBitrate(int kbps) {
     if (!gSession)
         return;
@@ -156,10 +217,35 @@ static void applyBitrate(int kbps) {
     if (kbps > 20000)
         kbps = 20000;
     gBitrateKbps = kbps;
+    // Rely on AverageBitRate + RealTime without a tight 1s DataRateLimits cap:
+    // on A11 (iPhone 8), a hard 1s byte ceiling starves IDR keyframes and faults
+    // the session (-12911/-12903) during full-screen high-motion video playback.
     VTSessionSetProperty(gSession, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef) @(kbps * 1000));
-    // Allow short bursts (scrolling) but cap one second at 1.5x the target.
-    NSArray *limits = @[ @(kbps * 1000 / 8 * 3 / 2), @1 ];
-    VTSessionSetProperty(gSession, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)limits);
+}
+
+static void wakeKeyFrame(void) {
+    if (!gEncQ)
+        return;
+    dispatch_async(gEncQ, ^{
+        CFTimeInterval now = CACurrentMediaTime();
+        static BOOL retryScheduled = NO;
+        double remaining = 0.30 - (now - gLastKeyWakeAt);
+        if (remaining > 0) {
+            if (!retryScheduled) {
+                retryScheduled = YES;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remaining * NSEC_PER_SEC)), gEncQ, ^{
+                    retryScheduled = NO;
+                    if (gClientCount.load() > 0) wakeKeyFrame();
+                });
+            }
+            return;
+        }
+        gLastKeyWakeAt = now;
+        gWantKey.store(true);
+        if (!gSession || !gLastPB || gPendingPB) return;
+        setPB(&gPendingPB, gLastPB);
+        pumpEncoder();
+    });
 }
 
 static void vtOutputImpl(void *sourceRefCon, OSStatus status, VTEncodeInfoFlags infoFlags, CMSampleBufferRef sb);
@@ -174,21 +260,37 @@ static void vtOutput(void *refCon, void *sourceRefCon, OSStatus status, VTEncode
 
 static void vtOutputImpl(void *sourceRefCon, OSStatus status, VTEncodeInfoFlags infoFlags, CMSampleBufferRef sb) {
     gInFlight.fetch_sub(1);
-    if (status != noErr || !sb || (infoFlags & kVTEncodeInfo_FrameDropped) || !CMSampleBufferDataIsReady(sb)) {
-        if ((intptr_t)sourceRefCon & 4) {
-            // A forced keyframe was lost: waiting clients (needKey) would stall on a
-            // static screen. Re-request it and re-encode the last frame.
-            gWantKey.store(true);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (gSession && gLastPB && !gPendingPB) {
-                    setPB(&gPendingPB, gLastPB);
-                    pumpEncoder();
-                }
+    if (gShuttingDown.load(std::memory_order_relaxed))
+        return;
+    if (status != noErr) {
+        gWantKey.store(true);
+        uint64_t errGen = gSessionGen.load(std::memory_order_relaxed);
+        if (gEncQ) {
+            dispatch_async(gEncQ, ^{
+                if (gSession && gSessionGen.load(std::memory_order_relaxed) == errGen)
+                    recoverFromEncoderError(status);
             });
         }
         return;
     }
+    if (!sb || (infoFlags & kVTEncodeInfo_FrameDropped) || !CMSampleBufferDataIsReady(sb)) {
+        if ((intptr_t)sourceRefCon & 4) {
+            // A forced keyframe was dropped under heavy load: wait briefly and retry
+            // so waiting clients never stall on a static or busy screen.
+            gWantKey.store(true);
+            if (gEncQ) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(35 * NSEC_PER_MSEC)), gEncQ, ^{
+                    if (gSession && gLastPB && !gPendingPB) {
+                        setPB(&gPendingPB, gLastPB);
+                        pumpEncoder();
+                    }
+                });
+            }
+        }
+        return;
+    }
 
+    gEncoderProduced.store(true);
     BOOL key = YES;
     CFArrayRef atts = CMSampleBufferGetSampleAttachmentsArray(sb, false);
     if (atts && CFArrayGetCount(atts) > 0) {
@@ -208,8 +310,16 @@ static void vtOutputImpl(void *sourceRefCon, OSStatus status, VTEncodeInfoFlags 
     if (nalLen < 1 || nalLen > 4)
         nalLen = 4;
 
+    // AVCC (length-prefixed NAL units) -> Annex-B (start codes), reading the
+    // VT block buffer in-place when contiguous to avoid per-frame copy/alloc.
+    CMBlockBufferRef bb = CMSampleBufferGetDataBuffer(sb);
+    size_t total = bb ? CMBlockBufferGetDataLength(bb) : 0;
+    if (total == 0)
+        return;
+
     static const uint8_t sc[4] = {0, 0, 0, 1};
-    NSMutableData *pkt = [NSMutableData dataWithLength:12];
+    NSMutableData *pkt = [NSMutableData dataWithCapacity:12 + total + (key ? 128 : 16)];
+    [pkt setLength:12];
 
     if (key) {
         for (size_t i = 0; i < psCount; i++) {
@@ -222,15 +332,19 @@ static void vtOutputImpl(void *sourceRefCon, OSStatus status, VTEncodeInfoFlags 
         }
     }
 
-    // AVCC (length-prefixed NAL units) -> Annex-B (start codes).
-    CMBlockBufferRef bb = CMSampleBufferGetDataBuffer(sb);
-    size_t total = bb ? CMBlockBufferGetDataLength(bb) : 0;
-    if (total == 0)
-        return;
-    NSMutableData *raw = [NSMutableData dataWithLength:total];
-    if (CMBlockBufferCopyDataBytes(bb, 0, total, raw.mutableBytes) != kCMBlockBufferNoErr)
-        return;
-    const uint8_t *p = (const uint8_t *)raw.bytes;
+    size_t contigLen = 0;
+    char *contigPtr = NULL;
+    NSMutableData *fallback = nil;
+    const uint8_t *p = NULL;
+    if (CMBlockBufferGetDataPointer(bb, 0, &contigLen, NULL, &contigPtr) == kCMBlockBufferNoErr && contigPtr &&
+        contigLen >= total) {
+        p = (const uint8_t *)contigPtr;
+    } else {
+        fallback = [NSMutableData dataWithLength:total];
+        if (CMBlockBufferCopyDataBytes(bb, 0, total, fallback.mutableBytes) != kCMBlockBufferNoErr)
+            return;
+        p = (const uint8_t *)fallback.bytes;
+    }
     size_t off = 0;
     while (off + (size_t)nalLen <= total) {
         uint32_t n = 0;
@@ -248,7 +362,10 @@ static void vtOutputImpl(void *sourceRefCon, OSStatus status, VTEncodeInfoFlags 
     put32(h, (uint32_t)(pkt.length - 12));
     put16(h + 4, (uint32_t)dim.width);
     put16(h + 6, (uint32_t)dim.height);
-    h[8] = key ? 1 : 0;
+    uint8_t flags = key ? 1 : 0;
+    if (key && gNeedDecoderReset.exchange(false))
+        flags |= 4; // tell WebCodecs to rebuild its decoder after an encoder session reset
+    h[8] = flags;
     h[9] = (uint8_t)((intptr_t)sourceRefCon & 3);
     h[10] = h[11] = 0;
 
@@ -260,18 +377,30 @@ static void vtOutputImpl(void *sourceRefCon, OSStatus status, VTEncodeInfoFlags 
             if (c->needKey && !key)
                 continue;
             if (c->pending.load() >= kMaxQueuedPerClient) {
-                // Too far behind: drop its backlog, resync on a keyframe.
-                c->needKey = YES;
-                gWantKey.store(true);
+                if (!c->needKey) {
+                    c->needKey = YES;
+                    c->sendGeneration.fetch_add(1);
+                    // A serial barrier lets an in-progress packet finish intact.
+                    dispatch_async(c->sendQ, ^{
+                        dispatch_async(gNetQ, ^{
+                            if (!c->closed && c->needKey)
+                                wakeKeyFrame();
+                        });
+                    });
+                }
                 continue;
             }
             if (key)
                 c->needKey = NO;
             c->pending.fetch_add(1);
+            unsigned generation = c->sendGeneration.load();
             dispatch_async(c->sendQ, ^{
-                BOOL ok = writeAll(c->fd, (const uint8_t *)frame.bytes, frame.length);
+                BOOL ok = generation != c->sendGeneration.load() ||
+                          writeAll(c->fd, (const uint8_t *)frame.bytes, frame.length);
                 c->pending.fetch_sub(1);
                 if (!ok) {
+                    // A partially written packet makes this stream unusable.
+                    shutdown(c->fd, SHUT_RDWR);
                     dispatch_async(gNetQ, ^{
                         if (c->readSrc)
                             dispatch_source_cancel(c->readSrc);
@@ -309,6 +438,7 @@ static BOOL createSession(int w, int h, BOOL lowLatency) {
         return NO;
     }
     gSession = s;
+    gUsingLowLatency = lowLatency;
     TVLog(@"H264: encoder ready %dx%d lowLatency=%d bitrate=%dkbps fps<=%d", w, h, (int)lowLatency, gBitrateKbps,
           gMaxFps);
     return YES;
@@ -318,17 +448,19 @@ static BOOL ensureSession(int w, int h) {
     if (gSession && gEncW == w && gEncH == h)
         return YES;
     CFTimeInterval now = CACurrentMediaTime();
-    if (!gSession && now - gSessionFailedAt < 5.0)
+    if (!gSession && (now < gRetryEncoderAt || now - gSessionFailedAt < 1.0))
         return NO;
     teardownEncoder();
 
-    if (!createSession(w, h, YES) && !createSession(w, h, NO)) {
+    BOOL ok = (!gForceStandardRC && createSession(w, h, YES)) || createSession(w, h, NO);
+    if (!ok) {
         gSessionFailedAt = now;
         return NO;
     }
 
     VTSessionSetProperty(gSession, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
-    VTSessionSetProperty(gSession, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
+    CFStringRef profile = gForceStandardRC ? kVTProfileLevel_H264_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel;
+    VTSessionSetProperty(gSession, kVTCompressionPropertyKey_ProfileLevel, profile);
     VTSessionSetProperty(gSession, kVTCompressionPropertyKey_H264EntropyMode, kVTH264EntropyMode_CABAC);
     VTSessionSetProperty(gSession, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse); // no B-frames
     VTSessionSetProperty(gSession, kVTCompressionPropertyKey_MaxFrameDelayCount, (__bridge CFTypeRef) @0);
@@ -354,7 +486,9 @@ static BOOL ensureSession(int w, int h) {
     }
     gEncW = w;
     gEncH = h;
+    gSessionGen.fetch_add(1, std::memory_order_relaxed);
     gWantKey.store(true);
+    gNeedDecoderReset.store(true);
     return YES;
 }
 
@@ -379,6 +513,7 @@ static CVPixelBufferRef copyFrame(CVPixelBufferRef src) {
         return dst;
 
     // CPU fallback (only if the accelerator is unavailable).
+    gCpuCopies++;
     CVPixelBufferLockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
     CVPixelBufferLockBaseAddress(dst, 0);
     const uint8_t *sp = (const uint8_t *)CVPixelBufferGetBaseAddress(src);
@@ -403,8 +538,10 @@ static CVPixelBufferRef copyFrame(CVPixelBufferRef src) {
 
 static void scheduleRefine(uint64_t gen, double delay) {
     // After motion stops, re-encode the final frame so the encoder can sharpen
-    // it (a fast scroll ends on a soft frame otherwise).
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // it (a fast scroll ends on a soft frame otherwise). Add 0..80 ms jitter so
+    // many synced phones do not burst refine frames on the exact same millisecond.
+    double jitter = (double)arc4random_uniform(80) * 0.001;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((delay + jitter) * NSEC_PER_SEC)), gEncQ, ^{
         if (gen != gGeneration || gRefinesLeft <= 0 || !gLastPB || gPendingPB || gClientCount.load() == 0)
             return;
         gRefinesLeft--;
@@ -427,21 +564,16 @@ static void encodeNow(void) {
     int rot = gRotFn ? (gRotFn() & 3) : 0;
     CMTime pts = CMTimeMakeWithSeconds(CACurrentMediaTime(), 1000000);
     gInFlight.fetch_add(1);
+    gEncodeCalls++;
     OSStatus st = VTCompressionSessionEncodeFrame(gSession, pb, pts, kCMTimeInvalid, (__bridge CFDictionaryRef)props,
                                                   (void *)(intptr_t)(rot | (key ? 4 : 0)), NULL);
     gLastEncodeAt = CACurrentMediaTime();
     if (st != noErr) {
         gInFlight.fetch_sub(1);
-        if (key)
-            gWantKey.store(true);
-        static int sErrLogs = 0;
-        if (sErrLogs++ < 5)
-            TVLog(@"H264: encode failed: %d", (int)st);
-        if (st == kVTInvalidSessionErr) {
-            CVPixelBufferRelease(pb);
-            teardownEncoder(); // recreated on the next frame
-            return;
-        }
+        setPB(&gLastPB, pb);
+        CVPixelBufferRelease(pb);
+        recoverFromEncoderError(st);
+        return;
     }
     setPB(&gLastPB, pb);
     CVPixelBufferRelease(pb);
@@ -461,7 +593,7 @@ static void pumpEncoder(void) {
         if (!gPumpScheduled) {
             gPumpScheduled = YES;
             double d = wait > 0.004 ? wait : 0.004;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)), gEncQ, ^{
                 gPumpScheduled = NO;
                 pumpEncoder();
             });
@@ -471,34 +603,69 @@ static void pumpEncoder(void) {
     encodeNow();
 }
 
+static void drainCapturedFrame(void) {
+    os_unfair_lock_lock(&gCaptureLock);
+    CVPixelBufferRef src = gCapturedPB;
+    gCapturedPB = NULL;
+    gCaptureScheduled = NO;
+    os_unfair_lock_unlock(&gCaptureLock);
+    if (!src)
+        return;
+    if (gClientCount.load() == 0) {
+        CVPixelBufferRelease(src);
+        return;
+    }
+    int w = (int)CVPixelBufferGetWidth(src), h = (int)CVPixelBufferGetHeight(src);
+    if (w > 0 && h > 0) {
+        if (gScalePct < 100) {
+            // Smaller encode: the copy below scales on the GPU for free, the
+            // encoder then has only a fraction of the pixels to compress.
+            w = MAX(64, w * gScalePct / 100) & ~1;
+            h = MAX(64, h * gScalePct / 100) & ~1;
+        }
+        if (ensureSession(w, h)) {
+            CVPixelBufferRef copy = copyFrame(src);
+            if (copy) {
+                gCopies++;
+                if (gPendingPB && gPendingPB != gLastPB) gSupersededCopies++;
+                setPB(&gPendingPB, copy);
+                CVPixelBufferRelease(copy);
+                pumpEncoder();
+            }
+        }
+    }
+    CVPixelBufferRelease(src);
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - gLastStats >= 1) {
+        unsigned captures = gCaptureCount.exchange(0);
+        TVLogVerbose(@"H264: capture=%u copy=%u superseded=%u cpuCopy=%u encodeCalls=%u", captures, gCopies, gSupersededCopies, gCpuCopies, gEncodeCalls);
+        gCopies = gSupersededCopies = gCpuCopies = gEncodeCalls = 0;
+        gLastStats = now;
+    }
+}
+
 void TVH264PushFrame(CMSampleBufferRef sampleBuffer) {
-    if (gClientCount.load() == 0)
+    if (gClientCount.load(std::memory_order_relaxed) == 0 || !gEncQ)
         return;
     CVPixelBufferRef src = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (!src)
         return;
-    int w = (int)CVPixelBufferGetWidth(src), h = (int)CVPixelBufferGetHeight(src);
-    if (w <= 0 || h <= 0)
-        return;
-    if (gScalePct < 100) {
-        // Smaller encode: the copy below scales on the GPU for free, the
-        // encoder then has only a fraction of the pixels to compress.
-        w = MAX(64, w * gScalePct / 100) & ~1;
-        h = MAX(64, h * gScalePct / 100) & ~1;
+    gCaptureCount.fetch_add(1, std::memory_order_relaxed);
+    os_unfair_lock_lock(&gCaptureLock);
+    setPB(&gCapturedPB, src);
+    BOOL wake = !gCaptureScheduled;
+    gCaptureScheduled = YES;
+    os_unfair_lock_unlock(&gCaptureLock);
+    if (wake) {
+        dispatch_async(gEncQ, ^{
+            drainCapturedFrame();
+        });
     }
-    if (!ensureSession(w, h))
-        return;
-    CVPixelBufferRef copy = copyFrame(src);
-    if (!copy)
-        return; // encoder backlog: this frame is skipped, a newer one follows
-    setPB(&gPendingPB, copy);
-    CVPixelBufferRelease(copy);
-    pumpEncoder();
 }
 
-// Main thread. fps <= 0 / pct <= 0 = configured defaults. A new size takes
-// effect on the next captured frame (ensureSession rebuilds the encoder and
-// sends a keyframe); fpsChanged also forces that frame on a static screen.
+// gEncQ. fps <= 0 / pct <= 0 = configured defaults. A new size takes effect on
+// the next captured frame (ensureSession rebuilds the encoder and sends a
+// keyframe); fpsChanged runs on main and also forces a frame on static screens.
 static void applyProfile(int fps, int pct) {
     if (fps <= 0)
         fps = gDefaultFps;
@@ -511,8 +678,13 @@ static void applyProfile(int fps, int pct) {
     if (gSession)
         VTSessionSetProperty(gSession, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef) @(fps));
     TVLog(@"H264: profile fps=%d size=%d%%", fps, pct);
-    if (gFpsChanged)
-        gFpsChanged(fps == gDefaultFps ? 0 : fps);
+    void (^cb)(int) = gFpsChanged;
+    int want = (fps == gDefaultFps) ? 0 : fps;
+    if (cb) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            cb(want);
+        });
+    }
 }
 
 #pragma mark - Network (gNetQ)
@@ -520,18 +692,30 @@ static void applyProfile(int fps, int pct) {
 static void notifyClients(void) {
     int n = gClientCount.load();
     void (^cb)(int) = gClientsChanged;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (n == 0) {
-            teardownEncoder();
-            applyProfile(0, 0); // next viewer starts from the defaults
-        } else if (gLastPB && !gPendingPB) {
-            // Static screen: resend the last frame as a keyframe right away.
-            setPB(&gPendingPB, gLastPB);
-            pumpEncoder();
-        }
-        if (cb)
+    if (gEncQ) {
+        dispatch_async(gEncQ, ^{
+            if (n == 0) {
+                os_unfair_lock_lock(&gCaptureLock);
+                setPB(&gCapturedPB, NULL);
+                os_unfair_lock_unlock(&gCaptureLock);
+                if (gClientCount.load() != 0) return;
+                teardownEncoder();
+                gRetryEncoderAt = -100;
+                gEncoderFailures = 0;
+                gEncoderProduced.store(false);
+                applyProfile(0, 0); // next viewer starts from the defaults
+            } else if (gLastPB && !gPendingPB) {
+                // Static screen: resend the last frame as a keyframe right away.
+                setPB(&gPendingPB, gLastPB);
+                pumpEncoder();
+            }
+        });
+    }
+    if (cb) {
+        dispatch_async(dispatch_get_main_queue(), ^{
             cb(n);
-    });
+        });
+    }
 }
 
 // The phone's UDID (what usbmuxd reports as SerialNumber), so iOSView can tell
@@ -574,7 +758,7 @@ static void handleClientBytes(TVH264Client *c, const uint8_t *buf, ssize_t n) {
     for (ssize_t i = 0; i < n; i++) {
         if (c->inlen == 0) {
             if (buf[i] == 'K') {
-                gWantKey.store(true);
+                wakeKeyFrame();
                 continue;
             }
             if (buf[i] == 'I') {
@@ -595,9 +779,9 @@ static void handleClientBytes(TVH264Client *c, const uint8_t *buf, ssize_t n) {
                 gNewBitrateKbps.store((int)kbps);
         } else { // 'P'
             int fps = c->inbuf[1] & 0x7f, pct = c->inbuf[2] & 0x7f;
-            if (fps < 5 || fps > 60 || pct < 25 || pct > 100)
+            if (fps < 5 || fps > 60 || pct < 25 || pct > 100 || !gEncQ)
                 continue;
-            dispatch_async(dispatch_get_main_queue(), ^{
+            dispatch_async(gEncQ, ^{
                 applyProfile(fps, pct);
             });
         }
@@ -624,7 +808,7 @@ static void acceptClients(int lfd) {
         // Small kernel send buffer: on congested Wi-Fi, frames back up in our
         // per-client queue (where they are dropped -> keyframe resync) instead
         // of piling up seconds of stale video inside the socket.
-        int sndbuf = 64 * 1024;
+        int sndbuf = 128 * 1024;
         setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
 #ifdef TCP_NOTSENT_LOWAT
         int lowat = 16 * 1024;
@@ -638,6 +822,7 @@ static void acceptClients(int lfd) {
         c->sendQ = dispatch_queue_create("trollvnc.h264.send", DISPATCH_QUEUE_SERIAL);
         c->needKey = YES;
         c->pending.store(0);
+        c->sendGeneration.store(0);
 
         dispatch_source_t rs = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, gNetQ);
         c->readSrc = rs;
@@ -697,6 +882,9 @@ int TVH264ClientCount(void) {
 BOOL TVH264Start(void) {
     if (gPort <= 0 || gListenSrc)
         return gListenSrc != nil;
+    dispatch_queue_attr_t encAttr =
+        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
+    gEncQ = dispatch_queue_create("trollvnc.h264.enc", encAttr);
     gNetQ = dispatch_queue_create("trollvnc.h264.net", DISPATCH_QUEUE_SERIAL);
     gClients = [NSMutableArray array];
 

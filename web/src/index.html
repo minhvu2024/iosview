@@ -6,7 +6,9 @@
 <title>iOSView</title>
 <link rel="icon" type="image/png" sizes="256x256" href="icon.png">
 <link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="style.css">
+<script>try{var t=localStorage.getItem("iosview.theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t;}catch(e){}</script>
 </head>
 <body>
 <div class="app">
@@ -18,7 +20,7 @@
         <ol>
           <li>Cài <b>TrollVNC</b> trên iPhone và bật server (cổng mặc định <code>5901</code>).</li>
           <li>Cắm USB vào PC (cần <b>Apple Devices</b> hoặc <b>iTunes</b>) rồi bấm <b>Tin cậy</b> trên iPhone — máy tự hiện.</li>
-          <li>Hoặc mở tab <b>Kết nối</b> ở bảng bên phải để thêm máy qua Wi‑Fi / quét mạng LAN.</li>
+          <li>Hoặc mở tab <b>Kết nối</b> ở bảng bên phải để nhập danh sách IP Wi‑Fi.</li>
         </ol>
       </div>
     </div>
@@ -38,6 +40,7 @@
       <img class="brand-mk" src="icon.svg" alt="">
       <div class="brand-txt"><b>iOSView</b><small>Điều khiển nhiều iPhone</small></div>
       <div class="brand-tools">
+        <button id="themeBtn" title="Chuyển giao diện Graphite / Carbon Dark" aria-label="Đổi chế độ màu"></button>
         <button id="collapseBtn" title="Thu gọn / mở rộng bảng"></button>
       </div>
     </div>
@@ -88,13 +91,13 @@
 
     <div class="ctrl-b" data-pane="conn" hidden>
       <div id="usbWarn" class="warn" hidden></div>
-      <form id="wifiForm" class="stack" autocomplete="off">
-        <label for="wifiAddr">Thêm máy qua Wi‑Fi — IP hoặc IP:cổng, mỗi dòng một máy</label>
-        <textarea id="wifiAddr" rows="4" placeholder="192.168.1.23&#10;192.168.1.24:5901" spellcheck="false"></textarea>
-        <button type="submit" class="primary">Thêm máy</button>
-      </form>
-      <button id="scanBtn" class="wide">Quét TrollVNC trong mạng LAN</button>
-      <p class="note">Máy cắm USB tự hiện. Một iPhone vừa cắm USB vừa có Wi‑Fi được gộp thành <b>một máy</b> (ưu tiên USB). Máy Wi‑Fi chưa tự gộp: chuột phải vào tên máy → <b>Gộp với máy USB</b>.</p>
+      <div class="stack">
+        <label for="wifiAddr">Danh sách IP Wi‑Fi — mỗi IP 1 dòng (nhập, dán hoặc xoá sẽ tự động cập nhật ngay)</label>
+        <textarea id="wifiAddr" rows="10" placeholder="192.168.1.23&#10;192.168.1.24&#10;192.168.1.25:5901" spellcheck="false" aria-describedby="wifiError"></textarea>
+        <p id="wifiError" class="note" aria-live="polite"></p>
+      </div>
+      <button id="clearWifiBtn" type="button" class="wide">Xoá hết máy Wi‑Fi</button>
+      <p class="note">Danh sách IP được tự động lưu cho cả lần mở sau, thứ tự máy xếp đúng theo thứ tự dòng. Đổi vị trí dòng IP để sắp lại thứ tự; xoá dòng IP trong ô sẽ ngắt kết nối và xoá máy đó ngay (không ảnh hưởng máy cắm USB).</p>
     </div>
 
     <div class="ctrl-b" data-pane="set" hidden>

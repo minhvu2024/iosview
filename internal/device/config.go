@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Config is persisted next to the executable as iosview.json.
@@ -41,8 +42,9 @@ type Config struct {
 	// stored as-is so it survives reinstalls of the window.
 	UI json.RawMessage `json:"ui,omitempty"`
 
-	path string
-	mu   sync.Mutex
+	path     string
+	mu       sync.Mutex
+	savedSeq uint64
 }
 
 // Tag is a named group of device IDs.
@@ -115,6 +117,25 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
+	return c.writeLocked(b)
+}
+
+// WriteSeq atomically writes pre-marshaled config bytes if no newer snapshot
+// has already been written, so callers do not hold Manager.mu across disk I/O.
+func (c *Config) WriteSeq(seq uint64, b []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if seq != 0 && seq < c.savedSeq {
+		return nil
+	}
+	if err := c.writeLocked(b); err != nil {
+		return err
+	}
+	c.savedSeq = seq
+	return nil
+}
+
+func (c *Config) writeLocked(b []byte) error {
 	tmp := c.path + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
 		return err
@@ -122,5 +143,12 @@ func (c *Config) Save() error {
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, c.path)
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		if err = os.Rename(tmp, c.path); err == nil {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return err
 }

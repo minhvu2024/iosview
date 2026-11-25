@@ -53,7 +53,8 @@ BOOL TVH264Start(void);
 /// Number of connected stream clients.
 int TVH264ClientCount(void);
 
-/// Feed a captured frame (main thread). Cheap no-op when there are no clients.
+/// Feed a captured frame (safe from the capture/main thread; encoding runs on
+/// its own high-priority serial queue so HID input injection is never stalled).
 void TVH264PushFrame(CMSampleBufferRef sampleBuffer);
 
 #ifdef __cplusplus

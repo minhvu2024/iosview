@@ -43,7 +43,7 @@ func (c *Client) ReadClipboard(ctx context.Context, command bool) (string, error
 	c.mu.Lock()
 	ext, known, cached := c.extClip, c.clipKnown, c.clipText
 	c.mu.Unlock()
-	if known && !command {
+	if known && !ext && !command {
 		return cached, nil
 	}
 	if ext {

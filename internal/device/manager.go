@@ -4,6 +4,7 @@
 package device
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -41,28 +42,34 @@ type Device struct {
 	Kind string `json:"kind,omitempty"`
 	IOS  string `json:"ios,omitempty"` // iOS version (cable phones)
 
-	m        *Manager
-	usbID    int64
-	usbOK    bool // a usbmuxd path exists (cable preferred over Wi-Fi sync)
-	usbCable bool // that path is a real cable, not usbmuxd Wi-Fi sync
-	wifiAddr string
-	present  bool
-	queue    chan Event
-	stop     chan struct{}
-	attempts int
-	owner    chan struct{} // held by the one writer that may drain queue
-	cur      session       // live control session (guarded by m.mu)
-	held     *ptrState     // last pointer state sent to the phone (writer-owned)
+	m           *Manager
+	usbID       int64
+	usbOK       bool // a usbmuxd path exists (cable preferred over Wi-Fi sync)
+	usbCable    bool // that path is a real cable, not usbmuxd Wi-Fi sync
+	wifiAddr    string
+	present     bool
+	queue       chan Event
+	stop        chan struct{}
+	attempts    int
+	owner       chan struct{} // held by the one writer that may drain queue
+	cur         session       // live control session (guarded by m.mu)
+	failedInput session
+	held        *ptrState // last pointer state sent to the phone (writer-owned)
 }
 
-// ptrState is the button mask and pixel position the phone last received.
+// ptrState is the button mask, pixel position and timing the phone last received.
 type ptrState struct {
-	mask uint8
-	x, y int
+	mask   uint8
+	x, y   int
+	at     time.Time
+	moved  bool    // whether this touch gesture has sent at least one move
+	edge   bool    // whether the press began on a screen edge
+	jx, jy float64 // per-gesture micro-offset for sync followers
+	rng    uint64  // writer-owned xorshift state
 }
 
 // DialH264 opens the phone's hardware H.264 stream (patched TrollVNC).
-func (d *Device) DialH264() (net.Conn, error) {
+func (d *Device) DialH264(ctx context.Context) (net.Conn, error) {
 	d.m.mu.Lock()
 	viaUSB, addr, usbID, vport, hport := d.usbOK, d.wifiAddr, d.usbID, d.m.cfg.VNCPort, d.m.cfg.H264Port
 	d.m.mu.Unlock()
@@ -70,7 +77,7 @@ func (d *Device) DialH264() (net.Conn, error) {
 		if hport <= 0 {
 			hport = vport + 10
 		}
-		return usbmux.Connect(usbID, uint16(hport))
+		return usbmux.ConnectContext(ctx, usbID, uint16(hport), true)
 	}
 	host, ps, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -80,38 +87,31 @@ func (d *Device) DialH264() (net.Conn, error) {
 		p, _ := strconv.Atoi(ps)
 		hport = p + 10
 	}
-	return dialLAN(net.JoinHostPort(host, strconv.Itoa(hport)), lanTimeout)
+	return dialLANContext(ctx, net.JoinHostPort(host, strconv.Itoa(hport)), lanTimeout)
 }
 
 // Dial opens a fresh TCP stream to the phone's VNC port (used both by the
 // control connection and by the browser viewer proxy).
-func (d *Device) Dial() (net.Conn, error) {
+func (d *Device) Dial() (net.Conn, error) { return d.dial(context.Background()) }
+
+func (d *Device) dial(ctx context.Context) (net.Conn, error) {
 	d.m.mu.Lock()
 	viaUSB, addr, usbID, port := d.usbOK, d.wifiAddr, d.usbID, d.m.cfg.VNCPort
 	d.m.mu.Unlock()
 	if viaUSB {
-		return usbmux.Connect(usbID, uint16(port))
+		return usbmux.ConnectContext(ctx, usbID, uint16(port), false)
 	}
-	return dialLAN(addr, lanTimeout)
+	return dialLANContext(ctx, addr, lanTimeout)
 }
 
 // connect opens a control session over the best path. A cable phone without
 // TrollVNC (port closed) on iOS 17.4+ switches to the CoreDevice driver.
 // conn is the raw stream when a TrollVNC handshake failed (closed by caller).
-func (d *Device) connect(pw string, mayProbe bool) (session, net.Conn, error) {
+func (d *Device) connect(ctx context.Context, pw string, mayProbe bool) (session, net.Conn, error) {
 	m := d.m
 	m.mu.Lock()
 	kind, usb, usbID, udid, ios := d.Kind, d.usbOK, d.usbID, d.UDID, d.IOS
 	m.mu.Unlock()
-	if usb && ios == "" && mayProbe {
-		if v, err := usbmux.ProductVersion(usbID); err == nil {
-			ios = v
-			m.mu.Lock()
-			d.IOS = v
-			m.mu.Unlock()
-			m.notify()
-		}
-	}
 	if kind == "cd" {
 		if !usb {
 			return nil, nil, errors.New("iPhone iOS 17+ không jailbreak: cần cắm cáp USB")
@@ -120,16 +120,32 @@ func (d *Device) connect(pw string, mayProbe bool) (session, net.Conn, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		if cl.info.IOS != "" && ios == "" {
+			m.mu.Lock()
+			d.IOS = cl.info.IOS
+			m.mu.Unlock()
+		}
 		return cl, nil, nil
 	}
-	conn, err := d.Dial()
+	conn, err := d.dial(ctx)
 	if err != nil {
-		if usb && errors.Is(err, ErrPortClosed) && iosAtLeast(ios, 17, 4) {
-			m.mu.Lock()
-			d.Kind = "cd"
-			m.mu.Unlock()
-			log.Printf("%s: iOS %s không có TrollVNC — dùng CoreDevice", d.ID, ios)
-			return d.connect(pw, false)
+		if usb && errors.Is(err, ErrPortClosed) {
+			if ios == "" && mayProbe {
+				if v, pErr := usbmux.ProductVersion(usbID); pErr == nil {
+					ios = v
+					m.mu.Lock()
+					d.IOS = v
+					m.mu.Unlock()
+					m.notify()
+				}
+			}
+			if iosAtLeast(ios, 17, 4) {
+				m.mu.Lock()
+				d.Kind = "cd"
+				m.mu.Unlock()
+				log.Printf("%s: iOS %s không có TrollVNC — dùng CoreDevice", d.ID, ios)
+				return d.connect(ctx, pw, false)
+			}
 		}
 		return nil, nil, err
 	}
@@ -138,6 +154,10 @@ func (d *Device) connect(pw string, mayProbe bool) (session, net.Conn, error) {
 		OnClipboard: func(text string) { m.publishClip(d.ID, text) },
 		OnResize: func(w, h int) {
 			m.mu.Lock()
+			if d.Width == w && d.Height == h {
+				m.mu.Unlock()
+				return
+			}
 			d.Width, d.Height = w, h
 			m.mu.Unlock()
 			m.notify()
@@ -160,6 +180,18 @@ func (d *Device) CDBase() string {
 	return ""
 }
 
+// NudgeSize asks a connected RFB control client for an immediate 1x1 update so
+// framebuffer size changes (rotation) are picked up as soon as the H.264 stream
+// reports a new orientation.
+func (d *Device) NudgeSize() {
+	d.m.mu.Lock()
+	c, _ := d.cur.(*rfb.Client)
+	d.m.mu.Unlock()
+	if c != nil {
+		c.PollSize()
+	}
+}
+
 // IsCD reports whether the phone is driven through CoreDevice.
 func (d *Device) IsCD() bool {
 	d.m.mu.Lock()
@@ -180,6 +212,10 @@ func (d *Device) refresh() {
 
 func (d *Device) setErr(msg string) {
 	d.m.mu.Lock()
+	if d.Error == msg {
+		d.m.mu.Unlock()
+		return
+	}
 	d.Error = msg
 	d.m.mu.Unlock()
 	d.m.notify()
@@ -187,19 +223,31 @@ func (d *Device) setErr(msg string) {
 
 // Manager owns all devices.
 type Manager struct {
-	mu       sync.Mutex
-	cfg      *Config
-	devices  map[string]*Device
-	syncOn   bool
-	subs     map[chan struct{}]struct{}
-	clipSubs map[chan ClipEvent]struct{}
-	USBError string
-	started  time.Time
+	mu           sync.Mutex
+	cfg          *Config
+	devices      map[string]*Device
+	syncOn       bool
+	copyBlank    bool
+	writeClip    func(string) error
+	clipWriteMu  sync.Mutex
+	clipSequence uint64
+	clipCopySubs map[chan ClipboardCopy]struct{}
+	clipWritten  uint64
+	lastSoloID   string
+	lastSoloAt   time.Time
+	clipBatch    *clipCollector
+	subs         map[chan struct{}]struct{}
+	clipSubs     map[chan ClipEvent]struct{}
+	USBError     string
+	started      time.Time
+	saveSeq      uint64
+	savePending  bool
+	saveRunning  bool
 }
 
 // NewManager creates the manager and starts discovery.
 func NewManager(cfg *Config) *Manager {
-	m := &Manager{cfg: cfg, devices: map[string]*Device{}, subs: map[chan struct{}]struct{}{}, clipSubs: map[chan ClipEvent]struct{}{}, syncOn: cfg.SyncOn, started: time.Now()}
+	m := &Manager{cfg: cfg, devices: map[string]*Device{}, subs: map[chan struct{}]struct{}{}, clipSubs: map[chan ClipEvent]struct{}{}, syncOn: cfg.SyncOn, writeClip: sysWriteClipboard, started: time.Now()}
 	// Hold the lock: newDevice may start a background save that reads cfg.
 	m.mu.Lock()
 	for _, a := range cfg.WifiDevices {
@@ -236,26 +284,37 @@ func (m *Manager) notify() {
 
 // State is the snapshot sent to the UI.
 type State struct {
-	Devices  []Device `json:"devices"`
-	SyncOn   bool     `json:"syncOn"`
-	USBError string   `json:"usbError,omitempty"`
-	Password string   `json:"password"`
-	Quality  int      `json:"quality"`
-	FocusQ   int      `json:"focusQuality"`
-	H264     bool     `json:"h264"`
-	VNCPort  int      `json:"vncPort"`
-	Strip    bool     `json:"stripAccents"`
-	Tags     []Tag    `json:"tags"`
+	Devices     []Device `json:"devices"`
+	WifiDevices []string `json:"wifiDevices"`
+	SyncOn      bool     `json:"syncOn"`
+	USBError    string   `json:"usbError,omitempty"`
+	Password    string   `json:"password"`
+	Quality     int      `json:"quality"`
+	FocusQ      int      `json:"focusQuality"`
+	H264        bool     `json:"h264"`
+	VNCPort     int      `json:"vncPort"`
+	Strip       bool     `json:"stripAccents"`
+	Tags        []Tag    `json:"tags"`
 }
 
 // Snapshot returns the current state.
 func (m *Manager) Snapshot() State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	st := State{SyncOn: m.syncOn, USBError: m.USBError, Password: m.cfg.Password, Quality: m.cfg.Quality, FocusQ: m.cfg.FocusQuality, H264: !m.cfg.NoH264, VNCPort: m.cfg.VNCPort, Strip: m.cfg.StripAccents}
+	st := State{
+		WifiDevices: append([]string(nil), m.cfg.WifiDevices...),
+		SyncOn:      m.syncOn,
+		USBError:    m.USBError,
+		Password:    m.cfg.Password,
+		Quality:     m.cfg.Quality,
+		FocusQ:      m.cfg.FocusQuality,
+		H264:        !m.cfg.NoH264,
+		VNCPort:     m.cfg.VNCPort,
+		Strip:       m.cfg.StripAccents,
+	}
 	for _, d := range m.devices {
 		cp := *d
-		cp.m, cp.queue, cp.stop, cp.owner, cp.cur, cp.held = nil, nil, nil, nil, nil, nil
+		cp.m, cp.queue, cp.stop, cp.owner, cp.cur, cp.held, cp.failedInput = nil, nil, nil, nil, nil, nil, nil
 		st.Devices = append(st.Devices, cp)
 	}
 	sort.Slice(st.Devices, func(i, j int) bool {
@@ -408,6 +467,102 @@ func (m *Manager) AddWifi(addr string) {
 	m.notify()
 }
 
+// SetWifiList replaces the saved Wi-Fi IP list with addrs (one IP[:port] per
+// entry), removes Wi-Fi devices omitted from the list, and assigns display
+// numbers in the exact line order provided so employees can control ordering.
+func (m *Manager) SetWifiList(addrs []string) error {
+	m.mu.Lock()
+	port := m.cfg.VNCPort
+	if port <= 0 {
+		port = 5901
+	}
+	seen := map[string]bool{}
+	want := make([]string, 0, len(addrs))
+	for _, raw := range addrs {
+		a := strings.TrimSpace(raw)
+		if a == "" {
+			continue
+		}
+		host, ps, err := net.SplitHostPort(a)
+		if err != nil {
+			if net.ParseIP(a) == nil {
+				m.mu.Unlock()
+				return errors.New("Địa chỉ Wi-Fi không hợp lệ: " + a)
+			}
+			host, ps = a, strconv.Itoa(port)
+		}
+		p, err := strconv.Atoi(ps)
+		if err != nil || p < 1 || p > 65535 || host == "" || strings.ContainsAny(host, " /\\\t\n") {
+			m.mu.Unlock()
+			return errors.New("Địa chỉ hoặc cổng Wi-Fi không hợp lệ: " + a)
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			host = ip.String()
+		} else if strings.Contains(host, ":") || strings.Trim(host, "0123456789.") == "" {
+			m.mu.Unlock()
+			return errors.New("Địa chỉ Wi-Fi không hợp lệ: " + a)
+		}
+		a = net.JoinHostPort(host, strconv.Itoa(p))
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		want = append(want, a)
+	}
+
+	// Disconnect and forget Wi-Fi addresses no longer in the list.
+	for id, d := range m.devices {
+		if d.wifiAddr == "" || seen[d.wifiAddr] {
+			continue
+		}
+		delete(m.cfg.WifiLinks, d.wifiAddr)
+		d.wifiAddr = ""
+		d.refresh()
+		if !d.present {
+			if d.stop != nil {
+				close(d.stop)
+				d.stop = nil
+			}
+			delete(m.devices, id)
+			delete(m.cfg.Numbers, id)
+			m.retagLocked(id, "")
+		}
+	}
+
+	// Ensure every requested address exists in exact input order.
+	m.cfg.WifiDevices = want
+	ordered := make([]*Device, 0, len(want))
+	usedID := map[string]bool{}
+	for _, a := range want {
+		d := m.addWifiLocked(a)
+		if d != nil && !usedID[d.ID] {
+			usedID[d.ID] = true
+			ordered = append(ordered, d)
+		}
+	}
+
+	// Reserve numbers for all other known devices, including disconnected USB phones.
+	reserved := make(map[int]bool, len(m.cfg.Numbers))
+	for id, no := range m.cfg.Numbers {
+		if !usedID[id] {
+			reserved[no] = true
+		}
+	}
+	no := 1
+	for _, d := range ordered {
+		for reserved[no] {
+			no++
+		}
+		d.No = no
+		m.cfg.Numbers[d.ID] = no
+		no++
+	}
+	m.mu.Unlock()
+	err := m.save()
+	m.notify()
+	return err
+}
+
 // Link tells the manager that the Wi-Fi entry wifiID is the same phone as the
 // cable device usbID (manual fallback when automatic identification is not
 // available, e.g. phones still running an older TrollVNC build).
@@ -531,7 +686,7 @@ func probeIdent(addr string, vport, hport int) (string, error) {
 	return "", errors.New("no identity")
 }
 
-func (m *Manager) save() {
+func (m *Manager) save() error {
 	m.mu.Lock()
 	m.cfg.SyncOn = m.syncOn
 	m.cfg.SyncGroup = map[string]struct{}{}
@@ -540,13 +695,44 @@ func (m *Manager) save() {
 			m.cfg.SyncGroup[id] = struct{}{}
 		}
 	}
-	// Marshal while still holding m.mu: other goroutines mutate cfg maps
-	// (names, links...) under it.
-	err := m.cfg.Save()
+	// Marshal under m.mu while cfg maps are consistent, then release m.mu
+	// before touching the disk so Dispatch never stalls on file/AV I/O.
+	b, err := json.MarshalIndent(m.cfg, "", "  ")
+	m.saveSeq++
+	seq := m.saveSeq
 	m.mu.Unlock()
+	if err == nil {
+		err = m.cfg.WriteSeq(seq, b)
+	}
 	if err != nil {
 		log.Printf("lưu cấu hình lỗi: %v", err)
 	}
+	return err
+}
+
+// saveLater coalesces state changes without making input wait for disk.
+func (m *Manager) saveLater() {
+	m.mu.Lock()
+	m.savePending = true
+	if m.saveRunning {
+		m.mu.Unlock()
+		return
+	}
+	m.saveRunning = true
+	m.mu.Unlock()
+	go func() {
+		for {
+			m.mu.Lock()
+			if !m.savePending {
+				m.saveRunning = false
+				m.mu.Unlock()
+				return
+			}
+			m.savePending = false
+			m.mu.Unlock()
+			m.save()
+		}
+	}()
 }
 
 // usbGrace: at start, how long a cable phone waits for usbmuxd before its
@@ -607,7 +793,16 @@ func (d *Device) loop(stop chan struct{}) {
 		m.mu.Unlock()
 		m.notify()
 
-		c, conn, err := d.connect(pw, true)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			select {
+			case <-stop:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		c, conn, err := d.connect(ctx, pw, true)
+		cancel()
 		if stopped() {
 			if c != nil {
 				c.Close()
@@ -669,8 +864,30 @@ func (d *Device) loop(stop chan struct{}) {
 		d.Status, d.Error, d.attempts = "online", "", 0
 		d.Width, d.Height, d.VNCName = w, h, c.Name()
 		d.cur = c
+		d.failedInput = nil
+		needIOS := d.usbOK && d.IOS == ""
+		usbID := d.usbID
 		m.mu.Unlock()
 		m.notify()
+		if needIOS {
+			go func(id int64) {
+				select {
+				case <-stop:
+					return
+				case <-time.After(1500 * time.Millisecond):
+				}
+				if v, pErr := usbmux.ProductVersion(id); pErr == nil && v != "" {
+					m.mu.Lock()
+					if d.IOS == "" {
+						d.IOS = v
+						m.mu.Unlock()
+						m.notify()
+						return
+					}
+					m.mu.Unlock()
+				}
+			}(usbID)
+		}
 		go func() {
 			defer func() { <-d.owner }()
 			d.runWriter(c)
@@ -687,6 +904,13 @@ func (d *Device) loop(stop chan struct{}) {
 		case <-c.Done():
 		}
 		m.mu.Lock()
+		if d.stop != stop {
+			if d.cur == c {
+				d.cur = nil
+			}
+			m.mu.Unlock()
+			return
+		}
 		if d.cur == c {
 			d.cur = nil
 		}
@@ -759,6 +983,12 @@ func (m *Manager) onUSB(ev usbmux.Event) {
 		id := "usb:" + udid
 		d, ok := m.devices[id]
 		if !ok {
+			if !cable {
+				// Ignore unplugged iTunes Wi-Fi Sync announcements for phones not
+				// already added by USB or explicit IP entry.
+				m.mu.Unlock()
+				return
+			}
 			d = m.newDevice(id, "usb", udid)
 		}
 		d.UDID = udid
@@ -788,10 +1018,20 @@ func (m *Manager) onUSB(ev usbmux.Event) {
 
 // SetSync toggles sync mode.
 func (m *Manager) SetSync(on bool) {
+	m.applySync(on)
+	m.save()
+}
+
+// ApplySync updates input routing immediately and persists it in the background.
+func (m *Manager) ApplySync(on bool) {
+	m.applySync(on)
+	m.saveLater()
+}
+
+func (m *Manager) applySync(on bool) {
 	m.mu.Lock()
 	m.syncOn = on
 	m.mu.Unlock()
-	m.save()
 	m.notify()
 }
 
@@ -806,6 +1046,17 @@ func (m *Manager) SetH264(on bool) {
 
 // SetInSync sets which devices belong to the sync group.
 func (m *Manager) SetInSync(ids []string, in bool) {
+	m.applyInSync(ids, in)
+	m.save()
+}
+
+// ApplyInSync updates membership before the next input from the same socket.
+func (m *Manager) ApplyInSync(ids []string, in bool) {
+	m.applyInSync(ids, in)
+	m.saveLater()
+}
+
+func (m *Manager) applyInSync(ids []string, in bool) {
 	m.mu.Lock()
 	for _, id := range ids {
 		if d, ok := m.devices[id]; ok {
@@ -813,7 +1064,6 @@ func (m *Manager) SetInSync(ids []string, in bool) {
 		}
 	}
 	m.mu.Unlock()
-	m.save()
 	m.notify()
 }
 
@@ -904,7 +1154,7 @@ const queueSize = 1024
 // sync mode an empty `from` (toolbar action) targets the whole group.
 // It never blocks: one stuck phone cannot slow down the others.
 func (m *Manager) Dispatch(from string, ev Event) int {
-	return m.deliver(m.targets(from), ev)
+	return m.deliver(from, m.targets(from), ev)
 }
 
 // DispatchOne sends an event to device id only, ignoring the sync group
@@ -912,44 +1162,107 @@ func (m *Manager) Dispatch(from string, ev Event) int {
 func (m *Manager) DispatchOne(id string, ev Event) int {
 	m.mu.Lock()
 	d := m.devices[id]
+	if d != nil {
+		m.lastSoloID = id
+		m.lastSoloAt = time.Now()
+	}
 	m.mu.Unlock()
 	if d == nil {
 		return 0
 	}
-	return m.deliver([]*Device{d}, ev)
+	return m.deliver(id, []*Device{d}, ev)
 }
 
-func (m *Manager) deliver(ts []*Device, ev Event) int {
+func (m *Manager) deliver(from string, ts []*Device, ev Event) int {
+	if len(ts) > 1 {
+		m.mu.Lock()
+		m.lastSoloID = ""
+		m.mu.Unlock()
+	}
+	accepted := 0
 	for _, d := range ts {
-		select {
-		case d.queue <- ev:
-		default:
-			// Dropping just this event could lose a release and leave a
-			// finger down on the phone. End the session instead: the
-			// reconnect discards the stale queue and lifts anything still
-			// pressed (see runWriter).
-			m.mu.Lock()
-			c := d.cur
-			m.mu.Unlock()
-			if c != nil {
-				select {
-				case <-c.Done():
-				default:
-					log.Printf("%s: hàng đợi input đầy, kết nối lại", d.ID)
-					c.Close()
-				}
-			}
+		devEv := ev
+		if len(ts) > 1 && from != "" && d.ID != from {
+			devEv.Follower = true
+		}
+		m.mu.Lock()
+		if (ev.Kind != evText || (d.Status == "online" && d.cur != nil && m.devices[d.ID] == d)) && m.enqueueInputLocked(d, devEv) {
+			accepted++
+		}
+		m.mu.Unlock()
+	}
+	return accepted
+}
+
+// InputTarget records the device and the connection that received a press.
+type InputTarget struct {
+	device *Device
+	conn   session
+}
+
+func (m *Manager) StartTouch(from string, one bool, ev Event) []InputTarget {
+	var devices []*Device
+	if one {
+		m.mu.Lock()
+		if d := m.devices[from]; d != nil {
+			devices = append(devices, d)
+			m.lastSoloID, m.lastSoloAt = from, time.Now()
+		}
+		m.mu.Unlock()
+	} else {
+		devices = m.targets(from)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(devices) > 1 {
+		m.lastSoloID = ""
+	}
+	var targets []InputTarget
+	for _, d := range devices {
+		if d.Status == "online" && d.cur != nil && m.enqueueInputLocked(d, ev) {
+			targets = append(targets, InputTarget{d, d.cur})
 		}
 	}
-	return len(ts)
+	return targets
+}
+
+func (m *Manager) ContinueTouch(targets []InputTarget, ev Event) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, target := range targets {
+		d := target.device
+		if d.cur == target.conn && d.Status == "online" && m.devices[d.ID] == d {
+			m.enqueueInputLocked(d, ev)
+		}
+	}
+}
+
+func (m *Manager) enqueueInputLocked(d *Device, ev Event) bool {
+	select {
+	case d.queue <- ev:
+		return true
+	default:
+		// Close only this session, outside the group dispatch path.
+		if c := d.cur; c != nil && d.failedInput != c {
+			d.failedInput = c
+			go func() {
+				log.Printf("%s: hàng đợi input đầy, kết nối lại", d.ID)
+				c.Close()
+			}()
+		}
+		return false
+	}
 }
 
 // Pointer helpers used by the HTTP layer.
 func Pointer(x, y float64, mask uint8) Event { return Event{Kind: evPointer, X: x, Y: y, Mask: mask} }
-func Key(ks uint32, down bool) Event         { return Event{Kind: evKey, Keysym: ks, Down: down} }
-func Text(s string) Event                    { return Event{Kind: evText, Text: s} }
-func ForceText(s string) Event               { return Event{Kind: evText, Text: s, Force: true} }
-func Button(b string) Event                  { return Event{Kind: evButton, Button: b} }
+func Wheel(x, y float64, mask uint8, up bool) Event {
+	return Event{Kind: evWheel, X: x, Y: y, Mask: mask, Down: up}
+}
+func Key(ks uint32, down bool) Event { return Event{Kind: evKey, Keysym: ks, Down: down} }
+func Text(s string) Event            { return Event{Kind: evText, Text: s} }
+func ForceText(s string) Event       { return Event{Kind: evText, Text: s, Force: true} }
+func Button(b string) Event          { return Event{Kind: evButton, Button: b} }
 
 // ClipEvent is a clipboard change reported by a phone.
 type ClipEvent struct {
@@ -959,7 +1272,7 @@ type ClipEvent struct {
 
 // SubscribeClipboard streams phone clipboard changes.
 func (m *Manager) SubscribeClipboard() (chan ClipEvent, func()) {
-	ch := make(chan ClipEvent, 16)
+	ch := make(chan ClipEvent, 256)
 	m.mu.Lock()
 	m.clipSubs[ch] = struct{}{}
 	m.mu.Unlock()
@@ -971,6 +1284,7 @@ func (m *Manager) SubscribeClipboard() (chan ClipEvent, func()) {
 }
 
 func (m *Manager) publishClip(id, text string) {
+	m.onPhoneClip(id, text)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for ch := range m.clipSubs {
@@ -1007,8 +1321,7 @@ func (m *Manager) SetUIPrefs(b []byte) error {
 	m.mu.Lock()
 	m.cfg.UI = append(json.RawMessage(nil), b...)
 	m.mu.Unlock()
-	m.save()
-	return nil
+	return m.save()
 }
 
 // moveWifiLocked replaces the Wi-Fi fallback address of a linked phone (its IP

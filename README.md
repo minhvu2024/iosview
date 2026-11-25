@@ -3,7 +3,7 @@
 Xem và điều khiển **nhiều iPhone cùng lúc** trên Windows, **đồng bộ thao tác**: chạm/vuốt/gõ phím trên một máy thì cả nhóm làm theo. Bản đầu tiên dành cho **iPhone đã jailbreak hoặc có TrollStore** (dùng TrollVNC trên máy).
 
 - Một file `iosview-<phiên bản>.exe`, ví dụ `iosview-0.10.2.exe` (khoảng 2–3 MB, nén UPX, có icon riêng, không hiện cửa sổ console). Số phiên bản luôn nằm trong tên file, trên thanh tiêu đề cửa sổ và ở góc dưới bảng điều khiển.
-- Tự nhận iPhone cắm **USB** (qua dịch vụ Apple Mobile Device), hoặc thêm máy qua **Wi‑Fi** bằng IP hay **Quét LAN**.
+- Tự nhận iPhone cắm **USB** (qua dịch vụ Apple Mobile Device), hoặc thêm máy qua **Wi‑Fi** bằng danh sách IP.
 - Thao tác chạm được truyền theo thời gian thực (nhấn, kéo, nhả). Tọa độ được quy về tỉ lệ nên máy khác độ phân giải vẫn chạm đúng chỗ.
 - **Copy/paste hai chiều** PC ⇄ iPhone (Ctrl+C / Ctrl+V). Chữ không dấu gõ thẳng không cần bấm Paste; chữ có dấu nạp clipboard rồi chạm Paste. Dán đồng bộ cả nhóm.
 - Phím cứng: Home, Đa nhiệm, Khoá, Vol±.
@@ -29,7 +29,7 @@ Có nhiều máy: dùng [`iphone/Managed.plist`](iphone/Managed.plist) để bui
 2. Cắm iPhone và bấm **Tin cậy** trên máy.
 3. Chạy `iosview-<phiên bản>.exe` mới nhất. Giao diện mở trong **cửa sổ app riêng** (WebView2 có sẵn trên Windows 10/11, không cần trình duyệt). **Đóng cửa sổ là thoát chương trình.** Máy nào thiếu WebView2 Runtime thì tự dùng cửa sổ Edge/Chrome như trước. Chạy lại khi đang mở sẵn thì chỉ hiện thêm cửa sổ. Nhật ký lỗi nằm ở `iosview.log` cạnh file exe.
 
-Máy không cắm USB: mở tab **Kết nối** ở bảng bên phải để nhập IP (mỗi dòng một máy) hoặc **Quét LAN**.
+Máy không cắm USB: mở tab **Kết nối** ở bảng bên phải để nhập IP (mỗi dòng một máy).
 
 ### Bố cục
 
@@ -47,7 +47,7 @@ Máy không cắm USB: mở tab **Kết nối** ở bảng bên phải để nh�
 - **Chọn / bỏ chọn:** nhấp vào thanh tiêu đề của ô, hoặc nhấp số máy trong lưới số.
 - **Phóng to / thu nhỏ màn hình máy:** **Ctrl + lăn chuột** (hoặc Ctrl + / Ctrl −) trên lưới đổi cỡ các ô; trên màn lớn đổi cỡ màn lớn. **Ctrl+0** về cỡ mặc định. Cửa sổ chương trình không bị zoom nữa.
 - **Nhãn máy:** chọn các máy rồi bấm **Thêm nhãn**. Tick ô vuông của nhãn = chọn cả nhóm; nhấp tên nhãn = chỉ hiện máy của nhãn đó; nhấp đúp = đổi tên nhãn; ↻ = cập nhật nhãn theo các máy đang chọn.
-- **Fps / độ phân giải (iPhone nóng, lag):** tab **Cài đặt → Hình H.264**: màn nhỏ và màn lớn mỗi loại một cặp *fps* (5–60) và *%* độ phân giải (25–100). Mặc định màn nhỏ 30 fps · 50 %, màn lớn 60 fps · 100 %. Máy yếu: chuột phải → **Hình riêng cho máy này…**, nhập ví dụ `20 40`. Áp dụng ngay, cần TrollVNC 3.3‑1004 trên iPhone. Ô "Hiện fps" hiển thị mức đang dùng.
+- **Fps / độ phân giải (iPhone nóng, lag):** tab **Cài đặt → Hình H.264**. Mặc định màn nhỏ 30 fps · 50 %, màn lớn 60 fps · 100 %. Chuột phải → **Hình riêng cho máy này…**, nhập `60 100` để máy chính giữ hình ở độ phân giải gốc khi chuyển giữa lưới và màn lớn, hoặc thử `20 40` cho máy yếu. Thiết lập áp dụng ngay và cần TrollVNC 3.3‑1004 trở lên.
 - **Chụp màn hình:** ảnh PNG lưu vào thư mục `screenshots` cạnh exe, tên file có số và tên máy.
 
 ## Cập nhật cho nhân viên (bản nội bộ)
@@ -72,14 +72,14 @@ Danh sách phím tắt đầy đủ: [`docs/SHORTCUTS.md`](docs/SHORTCUTS.md) (t
 | Gõ phím khi đang trỏ vào một máy | Bàn phím PC gõ thẳng vào máy: chữ hoa/thường, số, ký hiệu, phím mũi tên, Enter, Backspace. Chữ có dấu thì dùng ô "Gõ văn bản". Nên tắt Unikey khi gõ kiểu này |
 | **Ctrl+V** khi trỏ chuột vào máy | Gõ thẳng clipboard của PC vào ô đang nhập (không cần bấm Paste). Chữ có dấu tiếng Việt được **gõ bỏ dấu** (Nguyễn → Nguyen) — tắt trong tab Cài đặt nếu muốn giữ dấu (khi đó nạp clipboard máy, chạm Paste). Cần con trỏ đang ở ô nhập. Đồng bộ BẬT thì dán vào **mọi máy trong nhóm**. Hỗ trợ tiếng Việt có dấu và emoji |
 | **Ctrl+V nhiều dòng** | Copy **N dòng** (mỗi dòng một tài khoản) rồi Ctrl+V khi đang chọn **từ 2 máy trở lên**: dòng 1 → máy số nhỏ nhất, dòng 2 → máy kế… Các máy gõ **song song**, không bấm Enter cuối dòng. Luôn chia như vậy dù Đồng bộ bật hay tắt và đang trỏ vào máy nào; giữ **Alt** thì gõ nguyên khối vào một máy. Máy offline vẫn giữ chỗ nên không lệch dòng. **Mẹo:** trong một dòng dùng phím **Tab** để nhảy ô, ví dụ `tendangnhap<Tab>matkhau` điền cả tên đăng nhập lẫn mật khẩu trong một lần dán |
-| **Ctrl+C** | Khi cửa sổ app đang focus và không focus ô nhập: lấy clipboard các máy đang chọn, hoặc tất cả máy online nếu không chọn. Chỉ lấy dữ liệu, không thêm số hoặc tên máy; giữ nguyên xuống dòng; đọc song song, timeout 2 giây/máy, lỗi để rỗng. Hỗ trợ TrollVNC trước; CoreDevice để rỗng. Không hiện thông báo. |
+| **Ctrl+C** | Khi cửa sổ app đang focus và không focus ô nhập: lấy clipboard các máy đang chọn, hoặc tất cả máy online nếu không chọn. Chỉ lấy dữ liệu, không thêm số hoặc tên máy; giữ nguyên xuống dòng; đọc song song, timeout 800 ms/máy, lỗi để rỗng. Hỗ trợ TrollVNC trước; CoreDevice để rỗng. Không hiện thông báo. |
 | **Ctrl+A** | Chọn **tất cả máy** (đưa vào nhóm đồng bộ). Chọn hết chữ trong ô: nút **Chọn hết chữ** ở thanh công cụ dưới màn lớn |
 | **Shift + nhấp** / **Ctrl + nhấp** / **Ctrl + kéo** | Chọn liên tục / chọn một máy / chọn khung nhiều máy. Nhấp chỗ trống = bỏ chọn tất cả |
 | **Ctrl+D** | Dán cưỡng bức: luôn gõ từng phím (bỏ dấu), cho ô không nhận Paste |
 | **Ctrl+K** · **Ctrl+R** / **Ctrl+Q** · **Ctrl+,** | Cụm từ nhanh · mở / đóng ghi chú · mở cài đặt |
 | **Ctrl+Backspace** | Xoá sạch ô nhập (chọn hết + Backspace) |
 | Nút **Dán (Ctrl+V)** | Dán clipboard của PC vào máy đang chọn (hoặc cả nhóm khi bật đồng bộ) |
-| Nút **FPS** | Hiện trên từng máy: fps, băng thông, chế độ hình, **trễ Nms** (từ lúc PC nhận frame đến khi vẽ xong — phần trễ phía PC; phần còn lại là iPhone encode + đường truyền), `đợi N` khi decoder tồn đọng, `bỏ N` frame đã bỏ qua |
+| Nút **FPS** | Hiện trên từng máy: fps, băng thông, chế độ hình, **trễ Nms** (từ lúc WebView nhận khung hình đến khi gọi xong lệnh vẽ canvas), `đợi N` khi decoder tồn đọng, `bỏ N` frame đã bỏ qua |
 | Ô "Gõ văn bản…" + Enter | Gõ nhanh một đoạn văn bản rồi dán vào máy |
 | Thanh nút dưới mỗi máy: **▭ Đa nhiệm · ○ Home · ‹ Back** | Back = vuốt từ mép trái (hoạt động trong app có nút quay lại, Safari, Cài đặt…). Đồng bộ BẬT và máy đang chọn thì cả nhóm cùng bấm |
 | Nút ⤢ / nhấp đúp tiêu đề ô | Mở máy đó ở màn lớn; ✕ trên thanh công cụ để đóng. Toàn cửa sổ: nút ⛶ trên thanh công cụ hoặc chuột phải → Toàn cửa sổ |
@@ -114,7 +114,7 @@ Trình duyệt (UI) ── noVNC (chỉ xem, Tight/JPEG) + lớp bắt chuột/p
 cmd/iosview         chương trình chính (mở UI, đọc cấu hình)
 internal/usbmux     client usbmuxd (Windows TCP 27015, macOS/Linux unix socket)
 internal/rfb        client VNC tối giản: auth, pointer, key, clipboard UTF-8, theo dõi xoay màn hình
-internal/device     quản lý máy, kết nối lại, nhóm đồng bộ, fan-out, quét LAN
+internal/device     quản lý máy, kết nối lại, nhóm đồng bộ, fan-out
 internal/server     HTTP + WebSocket (điều khiển, proxy VNC)
 web/src             giao diện (TypeScript + noVNC), build ra web/dist rồi nhúng vào exe
 tools/fakemux       usbmuxd giả để test không cần iPhone
@@ -158,8 +158,8 @@ Icon nằm ở `assets/` (`icon.svg` là bản gốc, cũng dùng cho `web/src/i
 - [ ] Máy không jailbreak iOS 16.7–17.3 (TrollStore không cài được): WebDriverAgent
 - [ ] Phát hiện máy qua Bonjour (mDNS)
 
-Thử copy vùng chữ đang chọn trên iPhone: chạy `iosview-0.11.3.exe -copy-command` để gửi Cmd+C trước khi đọc (mặc định tắt). TrollVNC phải bật Clipboard. Clipboard chưa từng được TrollVNC gửi trong phiên có thể để rỗng; có thể bấm Copy trên menu iPhone rồi Ctrl+C trong app. Cờ Cmd+C cần được xác nhận riêng trên iOS 15.8.
+Thử copy vùng chữ đang chọn trên iPhone: chạy `iosview-0.11.12.exe -copy-command` để gửi Cmd+C trước khi đọc (mặc định tắt). TrollVNC phải bật Clipboard. Clipboard chưa từng được TrollVNC gửi trong phiên có thể để rỗng; có thể bấm Copy trên menu iPhone rồi Ctrl+C trong app. Cờ Cmd+C cần được xác nhận riêng trên iOS 15.8.
 
-Copy bằng nút trong app iPhone: bật Đồng bộ, mở cùng màn hình trên các máy và nhấp nút Copy. iOSView gom các sự kiện clipboard mới của nhóm trong tối đa 2 giây rồi ghi một lần lên clipboard PC theo số máy; máy không trả dữ liệu để rỗng. Không chọn máy nào thì chạm chỉ điều khiển máy đang trỏ; Ctrl+C vẫn lấy tất cả máy online. Ctrl+C lấy clipboard đã nhận trong phiên; nếu chưa biết thì yêu cầu đọc, timeout 2 giây/máy. Đọc clipboard không tự bấm nút Copy trong ứng dụng iPhone. Cờ `-copy-command` vẫn là thử nghiệm.
+Copy bằng nút trong app iPhone: bật Đồng bộ, mở cùng màn hình trên các máy và nhấp nút Copy. iOSView gom các sự kiện clipboard mới của nhóm trong tối đa 1,2 giây rồi ghi một lần lên clipboard PC theo số máy; máy không trả dữ liệu để rỗng. Không chọn máy nào thì chạm chỉ điều khiển máy đang trỏ; Ctrl+C vẫn lấy tất cả máy online. Ctrl+C yêu cầu clipboard mới trên máy hỗ trợ Extended Clipboard. Máy dùng RFB cũ có thể trả clipboard đã nhận trong phiên. Thời gian chờ tối đa 800 ms/máy. Khi dán lại nội dung vừa copy nhóm trong iOSView, dữ liệu được gửi theo ID của máy gốc. Với văn bản thường, dòng trống giữ chỗ và được bỏ qua khi gửi. Đọc clipboard không tự bấm nút Copy trong ứng dụng iPhone. Cờ `-copy-command` vẫn là thử nghiệm.
 
 Cài đặt → **Dòng trống giữa dữ liệu copy**: tắt (mặc định) ghép dữ liệu bằng một ký tự xuống dòng; bật ghép bằng hai ký tự xuống dòng. Áp dụng cho Ctrl+C và sự kiện Copy từ iPhone, giữ nguyên xuống dòng trong từng dữ liệu.

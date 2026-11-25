@@ -1,48 +1,47 @@
 Package: com.82flex.trollvnc
-Version: 3.3-1003
+Version: 3.3-1008
 Architecture: iphoneos-arm
 Maintainer: 82Flex <82flex@gmail.com>
-Installed-Size: 5872
+Installed-Size: 4308
 Depends: firmware (>= 14.0), preferenceloader
-Filename: debs/TrollVNC-iosview_3.3-1003_rootful.deb
-Size: 1514912
-MD5sum: 7d69464df21ff4465f32819416955579
-SHA1: 3e521c02e8fd8321d3810e9192177f9505559a34
-SHA256: f72f67c1517be40bd1ddec19e31ed25ef896b4d96cb1c271f812ad041085aefb
+Filename: debs/TrollVNC-iosview_3.3-1008_rootful.deb
+Size: 1185924
+MD5sum: 0c34c8a56a79324c3c74c28b9b819762
+SHA1: f4185a7c451bf26407969dd0d7cb825b88a7d019
+SHA256: 150acdf0700c0b1e4aad13b16f0470160e243d0aaf8649648355818653435481
 Section: Tweaks
 Description: TrollVNC is a VNC server for iOS devices, allowing remote access and control of the device’s screen.
 Author: 82Flex <82flex@gmail.com>
 Name: TrollVNC
 
 Package: com.82flex.trollvnc
-Version: 3.3-1004
+Version: 3.3-1008
 Architecture: iphoneos-arm64e
 Maintainer: 82Flex <82flex@gmail.com>
-Installed-Size: 5872
+Installed-Size: 4308
 Depends: firmware (>= 14.0), preferenceloader
-Filename: debs/TrollVNC-iosview_3.3-1004_roothide.deb
-Size: 1512100
-MD5sum: 7d48037a5ea41d17fad4409095fb5240
-SHA1: 7d5ead62d01a748d6fe50652c40499a5ce74e26f
-SHA256: 62f5c3cdf5294f84208777f403b0ca01291991e505770eb70abc3f115528f307
+Filename: debs/TrollVNC-iosview_3.3-1008_roothide.deb
+Size: 1184916
+MD5sum: 8dc3a8286f86fe466f21a4142268e30c
+SHA1: 380acc98a5201d6e3d680398c052fa6105fbf899
+SHA256: 5dc48997bd0e4ccda6b44021e98f6b9bc00fdd55cc5309ed4e1a1b17594e15a1
 Section: Tweaks
 Description: TrollVNC is a VNC server for iOS devices, allowing remote access and control of the device’s screen.
 Author: 82Flex <82flex@gmail.com>
 Name: TrollVNC
 
 Package: com.82flex.trollvnc
-Version: 3.3-1004
+Version: 3.3-1008
 Architecture: iphoneos-arm64
 Maintainer: 82Flex <82flex@gmail.com>
-Installed-Size: 5872
+Installed-Size: 4308
 Depends: firmware (>= 14.0), preferenceloader
-Filename: debs/TrollVNC-iosview_3.3-1004_rootless.deb
-Size: 1511984
-MD5sum: 3bf76b59ee0d48a77368d73b5915b17a
-SHA1: a1189ac1fbf74cee1c6df9f8c015c76586ecb2ad
-SHA256: 1a1ac63fe82c55595c9cb8f8196b10da66c3242e444338ed2eddfb808e4a9200
+Filename: debs/TrollVNC-iosview_3.3-1008_rootless.deb
+Size: 1185732
+MD5sum: d70e63c6e7f90d6b3c6c2bb70d4ca583
+SHA1: e9db01fdd99368b17b02ff86cb9a36b9f1ac7808
+SHA256: de8b07fb03db7fdd7ede020037289c800560085149edbb01fa4fa62eb300dcb7
 Section: Tweaks
 Description: TrollVNC is a VNC server for iOS devices, allowing remote access and control of the device’s screen.
 Author: 82Flex <82flex@gmail.com>
 Name: TrollVNC
-

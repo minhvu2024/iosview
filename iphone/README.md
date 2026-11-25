@@ -8,9 +8,9 @@ FPS 30-60, Keep-Alive 30s, Clipboard bật, tắt thông báo.
 
 | Máy của bạn | File cài |
 |---|---|
-| Dopamine RootHide | `TrollVNC-iosview_3.3-1003_roothide.deb` |
-| Dopamine, palera1n rootless | `TrollVNC-iosview_3.3-1003_rootless.deb` |
-| unc0ver, checkra1n, Taurine, palera1n rootful | `TrollVNC-iosview_3.3-1003_rootful.deb` |
+| Dopamine RootHide | `TrollVNC-iosview_3.3-1008_roothide.deb` |
+| Dopamine, palera1n rootless | `TrollVNC-iosview_3.3-1008_rootless.deb` |
+| unc0ver, checkra1n, Taurine, palera1n rootful | `TrollVNC-iosview_3.3-1008_rootful.deb` |
 
 Cách cài: gửi file .deb sang iPhone → mở bằng Sileo (hoặc Filza) → Install (cài đè lên bản 3.2 được).
 Server tự chạy lại sau khi cài, không cần respring.
@@ -34,6 +34,20 @@ Tự build 3.3-1004 trong repo TrollVNC đã fork (đang ở trạng thái 1003)
 3. Đổi `PACKAGE_VERSION` trong `Makefile` thành `3.3-1004`, chạy workflow **Build TrollVNC**, cài `.deb` roothide.
 (Repo mới từ commit gốc: áp `trollvnc-h264.patch` thay cho bước 2.)
 
+**Bản 3.3-1005**: tách luồng encode H.264 sang hàng đợi ưu tiên cao riêng (`trollvnc.h264.enc`, không tranh Main Thread với cảm ứng trên iPhone 6s/7), chống bão Keyframe khi vuốt đồng bộ nhiều máy qua Wi‑Fi (`kMaxQueuedPerClient = 8`, `SO_SNDBUF = 128 KB`), zero-copy `CMBlockBuffer`, làm lệch nhịp frame làm nét (`refine`) giữa các máy.
+
+**Bản 3.3-1006**: sửa lỗi màn hình đen trên **iPhone 8 (chip A11)** khi gặp video nặng — bỏ trần cứng `DataRateLimits` 1 giây làm rớt Keyframe/lỗi `-12911`, tự động phục hồi tức thì khi `VTCompressionSession` báo lỗi ở cả `vtOutput` lẫn `EncodeFrame` và tự chuyển sang `Main Profile` + bộ điều khiển bitrate chuẩn ổn định, đồng thời gắn cờ reset decoder cho PC.
+
+**Bản 3.3-1007**: chuẩn hoá ánh xạ điểm chạm sát biên màn hình (`vncPointToDevicePoint` + chuẩn hoá `[0..1]`), tự nhiên hoá thông số vật lý cảm ứng (`majorRadius` / `minorRadius` elip, `twist`, sub-pixel), và hãm quán tính cuộn chuột (`scrollDampedWithStartPoint`).
+
+**Bản 3.3-1008**: tối ưu đường chạm và phím. Patch hiện có vẫn giữ 46 ms ở cuối cử chỉ cuộn bằng con lăn; đánh thức `gEncQ` phát ngay Keyframe trên màn hình tĩnh khi PC xin `'K'` hoặc khi drop backlog (chống đơ hình 5.5 giây) và thêm `gSessionGen` chặn `recoverFromEncoderError` khởi tạo lại encoder trùng 2 lần. Đã build sẵn cả 3 gói `roothide`, `rootless`, `rootful` trong `iphone/` và cập nhật chỉ mục `iphone/repo/`.
+
 Muốn quay lại bản cũ: cài lại `TrollVNC-iosview_3.2_*.deb`.
+
+Mã nguồn thử nghiệm sau 3.3-1008 đã thêm nhịp thử lại tăng dần khi VideoToolbox lỗi liên tiếp. Gói 3.3-1008 trong kho vẫn là bản đã build trước thay đổi này. Giới hạn hàng đợi gửi hiện là 8 khung. Cần đo A/B với 3 khung trên cụm iPhone qua Wi‑Fi trước khi đổi mặc định.
+
+Mã nguồn thử nghiệm cũng bỏ qua các khung cũ chưa bắt đầu gửi khi một kết nối đầy hàng đợi. Gói TCP đang ghi được gửi hết trước khi đồng bộ lại bằng keyframe. Nhật ký chi tiết của TrollVNC có dòng `H264: capture=… copy=… superseded=… cpuCopy=… encodeCalls=…` tổng hợp khoảng một giây khi đang nhận hình. `superseded` đếm các bản sao đang chờ encode bị khung mới thay thế, `cpuCopy` đếm lượt dùng đường sao chép CPU, và `encodeCalls` gồm cả khung làm nét sau khi dừng cuộn.
+
+Thử RootHide trên một máy với cùng video, FPS, độ phân giải và bitrate. So USB rồi Wi‑Fi, mỗi lần 10–15 phút, lần lượt với gói 1008 và gói thử. Trên PC 0.11.14, bật FPS rồi trỏ vào tên máy để xem thời gian từ lần nhận gói, giải mã và vẽ gần nhất, cùng p95/p99 khoảng cách giữa hai lần vẽ trong kỳ thống kê. Đọc các khoảng cách này trong lúc video đang phát vì màn hình tĩnh cũng có khoảng nghỉ dài.
 
 Mã nguồn phần thêm: thư mục `trollvnc-h264/` (H264Streamer.mm + patch cho TrollVNC, commit gốc trong BASE_COMMIT).

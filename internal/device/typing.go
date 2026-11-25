@@ -16,14 +16,16 @@ const (
 	ksBksp   = 0xFF08
 )
 
-// Pacing. iOS drops or merges HID key events that are too short, so every
-// key is held for a while. 25/20 ms (0.10.15, was 35/25) verified on iPhone
-// 6s/7; go back up if characters get lost.
+// Pacing. iOS drops or merges HID key events that are too short, and some apps
+// with controlled email inputs (WebView/React Native/autocomplete popups) lose
+// characters or Shift state when bursts arrive too tightly.
 const (
-	keyHold  = 25 * time.Millisecond // down → up
-	keyGap   = 20 * time.Millisecond // between keys
-	modGap   = 15 * time.Millisecond // modifier down → key, key up → modifier up
-	fastHold = 18 * time.Millisecond // for long arrow/backspace runs
+	keyHold    = 28 * time.Millisecond // down → up
+	keyGap     = 24 * time.Millisecond // between normal keys
+	modGap     = 28 * time.Millisecond // Shift down → key, key up → Shift up
+	repeatGap  = 26 * time.Millisecond // extra settle before duplicate key or Shift flip
+	sepSettle  = 45 * time.Millisecond // extra settle after '@' / '.' for email popups
+	fastHold   = 18 * time.Millisecond // for long arrow/backspace runs
 )
 
 // shiftBase maps a US-keyboard "shifted" character to the base key that must
@@ -84,13 +86,28 @@ var viet = func() map[rune]string {
 	return m
 }()
 
+// cleanInvisible strips zero-width formatting characters (BOM, ZWSP, ZWNJ,
+// ZWJ, soft hyphen) often copied along with emails from spreadsheets or chats.
+func cleanInvisible(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ReplaceAll(s, "\r\n", "\n") {
+		switch r {
+		case '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u00ad':
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // stripAccents converts s to ASCII: Vietnamese diacritics removed, CRLF
 // normalised; anything else non-ASCII is dropped. Returns the text and
 // whether anything was changed.
 func stripAccents(s string) (string, bool) {
 	var b strings.Builder
 	changed := false
-	for _, r := range strings.ReplaceAll(s, "\r\n", "\n") {
+	for _, r := range cleanInvisible(s) {
 		if typeableRune(r) {
 			b.WriteRune(r)
 			continue
@@ -103,6 +120,16 @@ func stripAccents(s string) (string, bool) {
 	return b.String(), changed
 }
 
+func keySpec(r rune) (shift bool, base rune) {
+	if r >= 'A' && r <= 'Z' {
+		return true, r + ('a' - 'A')
+	}
+	if b, ok := shiftBase[r]; ok {
+		return true, b
+	}
+	return false, r
+}
+
 // typeText enters s into the focused field on the device by typing it key by
 // key (no clipboard, no ⌘V — iOS ignores ⌘ shortcuts from injected keyboards).
 // Non-ASCII text is either transliterated (StripAccents) or, if that option is
@@ -111,13 +138,14 @@ func stripAccents(s string) (string, bool) {
 // force ("dán cưỡng bức") always types, stripping accents, for fields that
 // ignore the clipboard.
 func (d *Device) typeText(c session, s string, force bool) {
+	s = cleanInvisible(s)
 	if s == "" {
 		return
 	}
 	// CoreDevice phones paste natively (clipboard + ⌘V): any text, accents
 	// kept, no typing delay. Forced paste still types key by key.
 	if p, ok := c.(paster); ok && !force {
-		if err := p.Paste(strings.ReplaceAll(s, "\r\n", "\n")); err != nil {
+		if err := p.Paste(s); err != nil {
 			d.setErr(err.Error())
 		}
 		return
@@ -135,14 +163,25 @@ func (d *Device) typeText(c session, s string, force bool) {
 			return
 		}
 	}
-	for _, r := range s {
+	var prevBase rune
+	prevShift := false
+	for i, r := range s {
 		select {
 		case <-c.Done():
 			return // session gone: don't keep typing into a dead connection
 		default:
 		}
+		shift, base := keySpec(r)
+		if i > 0 && ((base == prevBase && base != 0) || shift != prevShift) {
+			time.Sleep(repeatGap)
+		}
 		typeRune(c, r)
-		time.Sleep(keyGap)
+		prevBase, prevShift = base, shift
+		gap := keyGap
+		if r == '@' || r == '.' {
+			gap += sepSettle
+		}
+		time.Sleep(gap)
 	}
 }
 

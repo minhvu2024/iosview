@@ -84,16 +84,46 @@ func TestClipboardTimeoutAndEcho(t *testing.T) {
 	}
 }
 
-func TestReadKnownExtendedClipboard(t *testing.T) {
+func TestReadFreshExtendedClipboard(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
 	defer b.Close()
 	c := &Client{conn: a, closed: make(chan struct{}), extClip: true}
 	c.deliverClip("đã copy\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	go func() {
+		if _, err := io.ReadFull(b, make([]byte, 12)); err == nil {
+			c.deliverClip("mới")
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	got, err := c.ReadClipboard(ctx, false)
-	if err != nil || got != "đã copy\n" {
-		t.Fatalf("cached extended: %q %v", got, err)
+	if err != nil || got != "mới" {
+		t.Fatalf("fresh extended: %q %v", got, err)
+	}
+}
+
+func TestReadClipboardAfterLegacySet(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	c := &Client{conn: a, closed: make(chan struct{})}
+	c.deliverClip("old")
+	drained := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(b, make([]byte, 11))
+		drained <- err
+	}()
+	if err := c.SetClipboard("new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-drained; err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := c.ReadClipboard(ctx, false)
+	if err != nil || got != "new" {
+		t.Fatalf("after SetClipboard: %q %v", got, err)
 	}
 }

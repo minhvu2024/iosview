@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -48,7 +49,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/copy", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(map[string]string{"text": s.M.CopyClipboards(r.Context(), s.CopyCommand, r.URL.Query().Get("blank") == "1")})
+		result, err := s.M.CopyClipboards(r.Context(), s.CopyCommand, r.URL.Query().Get("blank") == "1")
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(result)
 	})
 	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -201,14 +208,17 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 		ws.Close(websocket.StatusNormalClosure, "")
 		return
 	}
-	conn, err := d.DialH264()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	conn, err := d.DialH264(ctx)
 	if err != nil {
 		ws.Close(websocket.StatusTryAgainLater, trim(err.Error()))
 		return
 	}
 	defer conn.Close()
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetReadBuffer(512 * 1024)
+	}
 
 	go func() {
 		defer cancel()
@@ -217,6 +227,7 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
+			_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 			if _, err := conn.Write(data); err != nil {
 				return
 			}
@@ -228,6 +239,7 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 	// One buffer reused for every frame: ws.Write is synchronous and does not
 	// keep it, so there is no per-frame allocation (less GC with many phones).
 	var buf []byte
+	lastRot := byte(0xff)
 	for {
 		var hdr [12]byte
 		if _, err := io.ReadFull(br, hdr[:]); err != nil {
@@ -238,6 +250,14 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 		if n == 0 || n > 16<<20 {
 			ws.Close(websocket.StatusProtocolError, "bad frame")
 			return
+		}
+		if hdr[8]&14 == 0 {
+			if rot := hdr[9] & 3; rot != lastRot {
+				if lastRot != 0xff {
+					go d.NudgeSize()
+				}
+				lastRot = rot
+			}
 		}
 		if cap(buf) < 12+int(n) {
 			buf = make([]byte, 12+int(n)+int(n)/2) // headroom: keyframes vary in size
@@ -329,7 +349,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	defer ws.CloseNow()
 
-	out := make(chan []byte, 64)
+	out := make(chan []byte, 256)
 	push := func(v any) {
 		b, _ := json.Marshal(v)
 		select {
@@ -338,6 +358,29 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sendState := func() { push(map[string]any{"t": "state", "state": s.M.Snapshot()}) }
+
+	// Run config-mutating commands (which persist iosview.json) on an ordered
+	// background worker so disk/antivirus latency never stalls realtime touch input.
+	cfgOps := make(chan func(), 64)
+	runCfg := func(fn func()) bool {
+		select {
+		case cfgOps <- fn:
+			return true
+		default:
+			push(map[string]any{"t": "toast", "s": "Đang lưu nhiều thay đổi, vui lòng thử lại"})
+			return false
+		}
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case fn := <-cfgOps:
+				fn()
+			}
+		}
+	}()
 
 	go func() {
 		for {
@@ -356,20 +399,21 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	sub, unsub := s.M.Subscribe()
-	defer unsub()
-	clips, unclip := s.M.SubscribeClipboard()
-	defer unclip()
+	copies, unsubscribeCopies := s.M.SubscribeClipboardCopies()
+	defer unsubscribeCopies()
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case c := <-clips:
-				push(map[string]any{"t": "clip", "d": c.Device, "s": c.Text})
+			case copy := <-copies:
+				push(map[string]any{"t": "clipboardCopy", "copy": copy})
 			}
 		}
 	}()
+
+	sub, unsub := s.M.Subscribe()
+	defer unsub()
 	go func() {
 		// Coalesce state pushes to at most ~20/s.
 		t := time.NewTicker(50 * time.Millisecond)
@@ -395,18 +439,13 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	// mid-drag (reload, crash, closed), the release would never come: lift
 	// them so no phone is left with a finger down.
 	type press struct {
-		x, y float64
-		one  bool
+		x, y    float64
+		targets []device.InputTarget
 	}
 	held := map[string]press{}
 	defer func() {
-		for id, p := range held {
-			ev := device.Pointer(p.x, p.y, 0)
-			if p.one {
-				s.M.DispatchOne(id, ev)
-			} else {
-				s.M.Dispatch(id, ev)
-			}
+		for _, p := range held {
+			s.M.ContinueTouch(p.targets, device.Pointer(p.x, p.y, 0))
 		}
 	}()
 	// dispatch honours Alt (individual control): only the device acted on.
@@ -428,12 +467,21 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		}
 		switch m.T {
 		case "p":
-			dispatch(&m, device.Pointer(m.X, m.Y, m.M))
+			ev := device.Pointer(m.X, m.Y, m.M)
+			p, active := held[m.D]
+			if active {
+				s.M.ContinueTouch(p.targets, ev)
+			} else if m.M != 0 {
+				p.targets = s.M.StartTouch(m.D, m.One, ev)
+			}
 			if m.M != 0 {
-				held[m.D] = press{m.X, m.Y, m.One}
+				p.x, p.y = m.X, m.Y
+				held[m.D] = p
 			} else {
 				delete(held, m.D)
 			}
+		case "w":
+			dispatch(&m, device.Wheel(m.X, m.Y, m.M, m.Down))
 		case "k":
 			dispatch(&m, device.Key(m.K, m.Down))
 		case "text":
@@ -442,40 +490,61 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 				ev = device.ForceText(m.S)
 			}
 			n := dispatch(&m, ev)
-			if !m.Quiet {
+			if m.Seq != 0 {
+				push(map[string]any{"t": "textAck", "seq": m.Seq, "count": n})
+			} else if !m.Quiet {
 				push(map[string]any{"t": "toast", "s": textToast(n)})
 			}
 		case "btn":
 			dispatch(&m, device.Button(m.B))
 		case "sync":
-			s.M.SetSync(m.On)
+			s.M.ApplySync(m.On)
 		case "h264":
-			s.M.SetH264(m.On)
+			on := m.On
+			runCfg(func() { s.M.SetH264(on) })
+		case "copyblank":
+			s.M.SetCopyBlank(m.On)
 		case "group":
-			s.M.SetInSync(m.IDs, m.On)
+			s.M.ApplyInSync(m.IDs, m.On)
 		case "rename":
-			s.M.Rename(m.D, m.Name)
+			d, name := m.D, m.Name
+			runCfg(func() { s.M.Rename(d, name) })
 		case "number":
-			if !s.M.SetNumber(m.D, m.No) {
-				push(map[string]any{"t": "toast", "s": "Số máy phải từ 1 đến 999"})
-			}
+			d, no := m.D, m.No
+			runCfg(func() {
+				if !s.M.SetNumber(d, no) {
+					push(map[string]any{"t": "toast", "s": "Số máy phải từ 1 đến 999"})
+				}
+			})
 		case "tag":
-			s.M.SetTag(m.Name, m.IDs, m.Old)
+			name, ids, old := m.Name, m.IDs, m.Old
+			runCfg(func() { s.M.SetTag(name, ids, old) })
 		case "tagdel":
-			s.M.DeleteTag(m.Name)
+			name := m.Name
+			runCfg(func() { s.M.DeleteTag(name) })
 		case "addwifi":
-			s.M.AddWifi(m.S)
+			addr := m.S
+			runCfg(func() { s.M.AddWifi(addr) })
+		case "setwifi":
+			ids, seq := m.IDs, m.Seq
+			if !runCfg(func() {
+				reply := map[string]any{"t": "wifi", "seq": seq}
+				if err := s.M.SetWifiList(ids); err != nil {
+					reply["error"] = "Không lưu được danh sách Wi-Fi: " + err.Error()
+				}
+				push(reply)
+			}) {
+				push(map[string]any{"t": "wifi", "seq": seq, "error": "Danh sách Wi-Fi chưa lưu"})
+			}
 		case "remove":
-			s.M.Remove(m.D)
+			d := m.D
+			runCfg(func() { s.M.Remove(d) })
 		case "link":
-			s.M.Link(m.D, m.S)
+			d, target := m.D, m.S
+			runCfg(func() { s.M.Link(d, target) })
 		case "settings":
-			s.M.SetSettings(m.Pw, m.Q, m.FQ, m.Port, m.Strip)
-		case "scan":
-			go func() {
-				found := s.M.ScanLAN()
-				push(map[string]any{"t": "scan", "found": found})
-			}()
+			pw, q, fq, port, strip := m.Pw, m.Q, m.FQ, m.Port, m.Strip
+			runCfg(func() { s.M.SetSettings(pw, q, fq, port, strip) })
 		case "ping":
 			push(map[string]any{"t": "pong", "seq": m.Seq})
 		default:
@@ -488,7 +557,7 @@ func textToast(n int) string {
 	if n == 0 {
 		return "Không có máy nào để dán (máy chưa online?)"
 	}
-	return "Đã dán vào " + itoa(n) + " máy"
+	return "Đã xếp lệnh gửi văn bản cho " + itoa(n) + " máy"
 }
 
 func itoa(n int) string {

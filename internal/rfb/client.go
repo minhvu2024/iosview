@@ -61,7 +61,8 @@ type Options struct {
 	// OnClipboard is called when the phone's clipboard changes (text).
 	OnClipboard func(text string)
 	// SizePoll is how often to ask the server for (1x1) updates so we learn
-	// about rotation / framebuffer size changes. Default 400ms.
+	// about rotation / framebuffer size changes. Default 2.5s (the H.264
+	// stream also nudges PollSize immediately when rotation changes).
 	SizePoll time.Duration
 }
 
@@ -79,7 +80,7 @@ func Handshake(conn net.Conn, opt Options) (*Client, error) {
 	_ = conn.SetDeadline(time.Time{})
 	poll := opt.SizePoll
 	if poll <= 0 {
-		poll = 400 * time.Millisecond
+		poll = 2500 * time.Millisecond
 	}
 	go c.readLoop(poll)
 	return c, nil
@@ -356,7 +357,7 @@ func (c *Client) SetClipboard(text string) error {
 		b := make([]byte, 8, 8+len(lb))
 		b[0] = 6
 		binary.BigEndian.PutUint32(b[4:], uint32(len(lb)))
-		return c.write(append(b, lb...))
+		return c.writeClipboard(append(b, lb...), text)
 	}
 	if !ext {
 		return errors.New("server không hỗ trợ clipboard UTF-8 (bật -C on trong TrollVNC)")
@@ -377,13 +378,33 @@ func (c *Client) SetClipboard(text string) error {
 	b := make([]byte, 8, 8+len(data))
 	b[0] = 6
 	binary.BigEndian.PutUint32(b[4:], uint32(-int32(len(data))))
-	return c.write(append(b, data...))
+	return c.writeClipboard(append(b, data...), text)
+}
+
+func (c *Client) writeClipboard(packet []byte, text string) error {
+	if err := c.write(packet); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.clipText, c.clipKnown = text, true
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *Client) requestUpdate() error {
 	// Incremental 1x1 update request: almost free, but lets the server tell
 	// us about DesktopSize changes (rotation).
 	return c.write([]byte{3, 1, 0, 0, 0, 0, 0, 1, 0, 1})
+}
+
+// PollSize requests an immediate 1x1 update so a DesktopSize change (rotation)
+// is picked up without waiting for the periodic poll timer.
+func (c *Client) PollSize() {
+	select {
+	case <-c.closed:
+	default:
+		_ = c.requestUpdate()
+	}
 }
 
 func (c *Client) setSize(w, h int) {
@@ -545,9 +566,10 @@ func (c *Client) deliverClip(text string) {
 		}
 	}
 	cb := c.onClip
+	requested := len(c.clipWait) > 0
 	c.mu.Unlock()
 	// TrollVNC suppresses remote-set echoes; equal local copies are still events.
-	if cb != nil {
+	if cb != nil && !requested {
 		cb(text)
 	}
 }

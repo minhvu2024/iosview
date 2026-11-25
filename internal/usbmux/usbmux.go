@@ -5,6 +5,7 @@
 package usbmux
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -42,7 +43,16 @@ func ipFromSockaddr(b []byte) string {
 	return fmt.Sprintf("%d.%d.%d.%d", b[4], b[5], b[6], b[7])
 }
 
-var tagCounter uint32
+var (
+	tagCounter uint32
+	// Bound concurrent usbmuxd handshakes so connecting/reconnecting 20+ phones
+	// at once never overflows AppleMobileDeviceService.exe's small listen backlog
+	// on Windows (which returns WSAECONNREFUSED). Held only around the short
+	// Connect request/reply (never across dial retries or active streams).
+	handshakeSem  = make(chan struct{}, 8)
+	backgroundSem = make(chan struct{}, 6)
+	seenMux       atomic.Bool
+)
 
 // ErrPortClosed: the phone is reachable but nothing listens on that port.
 var ErrPortClosed = errors.New("port closed")
@@ -62,16 +72,59 @@ func Address() (string, string) {
 	return "unix", "/var/run/usbmuxd"
 }
 
-func dial() (net.Conn, error) {
+func isRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "refused") || strings.Contains(s, "reset")
+}
+
+func dial() (net.Conn, error) { return dialContext(context.Background()) }
+
+func dialContext(ctx context.Context) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
 	n, a := Address()
-	c, err := net.DialTimeout(n, a, 3*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf("không kết nối được usbmuxd (%s %s) — đã cài Apple Devices/iTunes chưa? %w", n, a, err)
+	custom := os.Getenv("USBMUXD_SOCKET_ADDRESS") != ""
+	delays := []time.Duration{80 * time.Millisecond, 220 * time.Millisecond, 500 * time.Millisecond}
+	if custom {
+		delays = []time.Duration{20 * time.Millisecond}
 	}
-	if tc, ok := c.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
+	var lastErr error
+	var hint string
+	for attempt := 0; ; attempt++ {
+		c, err := dialer.DialContext(ctx, n, a)
+		if err == nil {
+			seenMux.Store(true)
+			if tc, ok := c.(*net.TCPConn); ok {
+				_ = tc.SetNoDelay(true)
+			}
+			return c, nil
+		}
+		lastErr = err
+		if !isRefused(err) || attempt >= len(delays) {
+			break
+		}
+		if attempt == 0 && !custom {
+			hint = nudgeAndDiagnose(seenMux.Load())
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delays[attempt]):
+		}
 	}
-	return c, nil
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if hint == "" {
+		if custom {
+			hint = "đã cài Apple Devices/iTunes chưa?"
+		} else {
+			hint = nudgeAndDiagnose(seenMux.Load())
+		}
+	}
+	return nil, fmt.Errorf("không kết nối được usbmuxd (%s %s) — %s: %w", n, a, hint, lastErr)
 }
 
 func baseMsg(t string) map[string]any {
@@ -148,7 +201,9 @@ func ListDevices() ([]Device, error) {
 		return nil, err
 	}
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	handshakeSem <- struct{}{}
+	defer func() { <-handshakeSem }()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
 	if err := send(c, baseMsg("ListDevices")); err != nil {
 		return nil, err
 	}
@@ -205,11 +260,39 @@ func Listen(events chan<- Event) error {
 // Connect opens a raw TCP tunnel to port on the device. The returned conn
 // carries the device's TCP stream directly.
 func Connect(deviceID int64, port uint16) (net.Conn, error) {
-	c, err := dial()
+	return ConnectContext(context.Background(), deviceID, port, false)
+}
+
+// ConnectContext reserves two handshake slots for foreground control.
+func ConnectContext(ctx context.Context, deviceID int64, port uint16, background bool) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if background {
+		select {
+		case backgroundSem <- struct{}{}:
+			defer func() { <-backgroundSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	c, err := dialContext(ctx)
 	if err != nil {
 		return nil, err
 	}
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	select {
+	case handshakeSem <- struct{}{}:
+		defer func() { <-handshakeSem }()
+	case <-ctx.Done():
+		c.Close()
+		return nil, ctx.Err()
+	}
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
+	deadline, _ := ctx.Deadline()
+	if limit := time.Now().Add(2500 * time.Millisecond); limit.Before(deadline) {
+		deadline = limit
+	}
+	_ = c.SetDeadline(deadline)
 	m := baseMsg("Connect")
 	m["DeviceID"] = deviceID
 	// usbmuxd expects the port in network byte order.
@@ -233,6 +316,10 @@ func Connect(deviceID int64, port uint16) (net.Conn, error) {
 		}
 		return nil, fmt.Errorf("usbmux Connect lỗi %d", n)
 	}
+	if !stop() || ctx.Err() != nil {
+		c.Close()
+		return nil, ctx.Err()
+	}
 	_ = c.SetDeadline(time.Time{})
 	return c, nil
 }
@@ -243,7 +330,7 @@ const lockdownPort = 62078
 // ProductVersion asks lockdownd for the iOS version ("17.5.1"). This key is
 // answered without pairing, so it works on a phone that was never trusted.
 func ProductVersion(deviceID int64) (string, error) {
-	c, err := Connect(deviceID, lockdownPort)
+	c, err := ConnectContext(context.Background(), deviceID, lockdownPort, true)
 	if err != nil {
 		return "", err
 	}
