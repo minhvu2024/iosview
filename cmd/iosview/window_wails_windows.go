@@ -91,7 +91,7 @@ func runWindow(o winOpts) (ok bool) {
 		InitialPosition:  application.WindowCentered,
 		Frameless:        true,
 		BackgroundType:   application.BackgroundTypeSolid,
-		BackgroundColour: application.NewRGB(0xE9, 0xEE, 0xEB), // --canvas
+		BackgroundColour: application.NewRGB(0xE8, 0xEC, 0xEF), // Soft Mint --bg-canvas
 		Windows: application.WindowsWindow{
 			BackdropType: application.Mica,
 			Theme:        application.Light,

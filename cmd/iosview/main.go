@@ -91,7 +91,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := &server.Server{M: m, Web: dist, ShotDir: filepath.Join(dir, "screenshots"), Version: version, CopyCommand: *copyCommand}
+	srv := &server.Server{M: m, Web: dist, Version: version, CopyCommand: *copyCommand}
 	h := srv.Handler()
 	if version != "dev" {
 		srv.Up = update.New(exe, version)

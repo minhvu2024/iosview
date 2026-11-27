@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,8 +29,6 @@ import (
 type Server struct {
 	M   *device.Manager
 	Web fs.FS
-	// ShotDir is where screenshots are saved ("" = screenshots disabled).
-	ShotDir string
 	// Version is shown in the UI so the running build is easy to tell apart.
 	Version string
 	// Up checks for / installs internal updates (nil = updates off, e.g. dev build).
@@ -210,7 +210,12 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	conn, err := d.DialH264(ctx)
+	trace := os.Getenv("IOSVIEW_H264_TIMING") == "1"
+	opened := time.Now()
+	conn, route, err := d.DialVideo(ctx)
+	if trace {
+		log.Printf("H264 %s %s: mở đường %v, lỗi=%v", id, route, time.Since(opened).Round(time.Millisecond), err)
+	}
 	if err != nil {
 		ws.Close(websocket.StatusTryAgainLater, trim(err.Error()))
 		return
@@ -219,13 +224,39 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetReadBuffer(512 * 1024)
 	}
+	if r.URL.Query().Get("ready") == "1" {
+		if err := ws.Write(ctx, websocket.MessageText, []byte("ready")); err != nil {
+			return
+		}
+	}
 
 	go func() {
 		defer cancel()
+		var lastRefresh time.Time
 		for {
 			_, data, err := ws.Read(ctx)
 			if err != nil {
 				return
+			}
+			if len(data) == 1 && data[0] == 'R' {
+				// TrollVNC forces a new screen capture when a viewer joins.
+				// K alone may only re-encode its cached pixel buffer.
+				if time.Since(lastRefresh) >= 2*time.Second {
+					lastRefresh = time.Now()
+					go func() {
+						start := time.Now()
+						refreshCtx, done := context.WithTimeout(ctx, time.Second)
+						defer done()
+						peer, err := d.DialH264(refreshCtx)
+						if err == nil {
+							peer.Close()
+						}
+						if trace {
+							log.Printf("H264 %s: mở kết nối làm mới %v, lỗi=%v", id, time.Since(start).Round(time.Millisecond), err)
+						}
+					}()
+				}
+				data[0] = 'K'
 			}
 			_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 			if _, err := conn.Write(data); err != nil {
@@ -240,14 +271,26 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 	// keep it, so there is no per-frame allocation (less GC with many phones).
 	var buf []byte
 	lastRot := byte(0xff)
+	var lastFrame, windowStart time.Time
+	var maxGap, maxWrite time.Duration
+	var frames int
+	var lastWrite time.Duration
+	var firstKey bool
+	if trace {
+		defer func() {
+			log.Printf("H264 %s %s: đóng, khung còn trong kỳ=%d, khoảng nhận max=%v, ghi max=%v, lỗi=%v",
+				id, route, frames, maxGap, maxWrite, err)
+		}()
+	}
 	for {
 		var hdr [12]byte
-		if _, err := io.ReadFull(br, hdr[:]); err != nil {
+		if _, err = io.ReadFull(br, hdr[:]); err != nil {
 			ws.Close(websocket.StatusNormalClosure, "")
 			return
 		}
 		n := binary.BigEndian.Uint32(hdr[:4])
 		if n == 0 || n > 16<<20 {
+			err = errors.New("khung sai kích thước")
 			ws.Close(websocket.StatusProtocolError, "bad frame")
 			return
 		}
@@ -264,12 +307,40 @@ func (s *Server) h264Proxy(w http.ResponseWriter, r *http.Request) {
 		}
 		msg := buf[:12+int(n)]
 		copy(msg, hdr[:])
-		if _, err := io.ReadFull(br, msg[12:]); err != nil {
+		if _, err = io.ReadFull(br, msg[12:]); err != nil {
 			ws.Close(websocket.StatusNormalClosure, "")
 			return
 		}
-		if err := ws.Write(ctx, websocket.MessageBinary, msg); err != nil {
+		var received time.Time
+		if trace {
+			received = time.Now()
+			if !firstKey && hdr[8]&1 != 0 {
+				firstKey = true
+				log.Printf("H264 %s %s: khung khóa đầu sau %v", id, route, received.Sub(opened).Round(time.Millisecond))
+			}
+			if !lastFrame.IsZero() {
+				gap := received.Sub(lastFrame)
+				if gap >= 500*time.Millisecond {
+					log.Printf("H264 %s %s: gián đoạn %v, ghi khung trước %v, còn lại %v", id, route, gap, lastWrite, gap-lastWrite)
+				}
+				maxGap = max(maxGap, gap)
+			} else {
+				windowStart = received
+			}
+			lastFrame = received
+		}
+		if err = ws.Write(ctx, websocket.MessageBinary, msg); err != nil {
 			return
+		}
+		if trace {
+			lastWrite = time.Since(received)
+			maxWrite = max(maxWrite, lastWrite)
+			frames++
+			if received.Sub(windowStart) >= 5*time.Second {
+				log.Printf("H264 %s: %d khung/%v, khoảng nhận lớn nhất=%v, ghi WebSocket lâu nhất=%v", id, frames,
+					received.Sub(windowStart).Round(time.Millisecond), maxGap.Round(time.Millisecond), maxWrite.Round(time.Millisecond))
+				windowStart, frames, maxGap, maxWrite = received, 0, 0, 0
+			}
 		}
 	}
 }
@@ -340,6 +411,28 @@ type msg struct {
 	Quiet bool     `json:"quiet,omitempty"` // text: the UI shows its own result
 }
 
+// Only the state publisher calls this. The writer may drain the slot at any time.
+func offerControlState(slot chan []byte, snapshot []byte) {
+	select {
+	case <-slot:
+	default:
+	}
+	slot <- snapshot
+}
+
+func offerControlReply(out chan<- []byte, reply map[string]any, cancel context.CancelFunc) {
+	b, _ := json.Marshal(reply)
+	select {
+	case out <- b:
+	default:
+		// End only this control connection if a command result cannot be sent.
+		switch reply["t"] {
+		case "textAck", "wifi", "clipboardCopy":
+			cancel()
+		}
+	}
+}
+
 func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled, OriginPatterns: []string{"wails.localhost"}})
 	if err != nil {
@@ -350,14 +443,12 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	defer ws.CloseNow()
 
 	out := make(chan []byte, 256)
-	push := func(v any) {
-		b, _ := json.Marshal(v)
-		select {
-		case out <- b:
-		default:
-		}
+	states := make(chan []byte, 1)
+	push := func(v map[string]any) { offerControlReply(out, v, cancel) }
+	sendState := func() {
+		b, _ := json.Marshal(map[string]any{"t": "state", "state": s.M.Snapshot()})
+		offerControlState(states, b)
 	}
-	sendState := func() { push(map[string]any{"t": "state", "state": s.M.Snapshot()}) }
 
 	// Run config-mutating commands (which persist iosview.json) on an ordered
 	// background worker so disk/antivirus latency never stalls realtime touch input.
@@ -384,17 +475,19 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		for {
+			var b []byte
 			select {
 			case <-ctx.Done():
 				return
-			case b := <-out:
-				wctx, c := context.WithTimeout(ctx, 5*time.Second)
-				err := ws.Write(wctx, websocket.MessageText, b)
-				c()
-				if err != nil {
-					cancel()
-					return
-				}
+			case b = <-out:
+			case b = <-states:
+			}
+			wctx, c := context.WithTimeout(ctx, 5*time.Second)
+			err := ws.Write(wctx, websocket.MessageText, b)
+			c()
+			if err != nil {
+				cancel()
+				return
 			}
 		}
 	}()
@@ -415,6 +508,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	sub, unsub := s.M.Subscribe()
 	defer unsub()
 	go func() {
+		sendState()
 		// Coalesce state pushes to at most ~20/s.
 		t := time.NewTicker(50 * time.Millisecond)
 		defer t.Stop()
@@ -433,7 +527,6 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	sendState()
 
 	// Devices this window is currently pressing on. If the window goes away
 	// mid-drag (reload, crash, closed), the release would never come: lift
@@ -495,7 +588,21 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 			} else if !m.Quiet {
 				push(map[string]any{"t": "toast", "s": textToast(n)})
 			}
-		case "btn":
+		case "phoneAction", "btn":
+			if m.T == "phoneAction" || m.B == "cc" {
+				req := m
+				runCfg(func() {
+					actionCtx, done := context.WithTimeout(ctx, 4*time.Second)
+					defer done()
+					apps, msg := s.M.PhoneAction(actionCtx, req.D, req.B, req.S, req.One)
+					if req.B == "apps" {
+						push(map[string]any{"t": "phoneApps", "seq": req.Seq, "apps": apps, "error": msg})
+					} else if msg != "" {
+						push(map[string]any{"t": "toast", "s": msg})
+					}
+				})
+				continue
+			}
 			dispatch(&m, device.Button(m.B))
 		case "sync":
 			s.M.ApplySync(m.On)
@@ -506,6 +613,12 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 			s.M.SetCopyBlank(m.On)
 		case "group":
 			s.M.ApplyInSync(m.IDs, m.On)
+		case "park":
+			if len(m.IDs) > 0 {
+				s.M.ApplyParkedGroup(m.IDs, m.On)
+			} else if m.D != "" {
+				s.M.ApplyParked(m.D, m.On)
+			}
 		case "rename":
 			d, name := m.D, m.Name
 			runCfg(func() { s.M.Rename(d, name) })

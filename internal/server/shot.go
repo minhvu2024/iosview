@@ -2,20 +2,15 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
+	"encoding/binary"
+	"image"
+	"image/draw"
+	"image/png"
 	"io"
+	"iosview/internal/device"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
 )
 
-var pngMagic = []byte("\x89PNG\r\n\x1a\n")
-
-// shot saves a PNG screenshot posted by the UI into ShotDir and answers with
-// the file path. Body: raw PNG. Query: d = device id.
 func (s *Server) shot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -26,55 +21,52 @@ func (s *Server) shot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if s.ShotDir == "" {
-		http.Error(w, "screenshots disabled", http.StatusNotFound)
-		return
-	}
 	d := s.M.Get(r.URL.Query().Get("d"))
 	if d == nil {
 		http.Error(w, "unknown device", http.StatusNotFound)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
-	if err != nil || !bytes.HasPrefix(body, pngMagic) {
-		http.Error(w, "need a PNG body", http.StatusBadRequest)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
+	if err != nil {
+		http.Error(w, "image too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	snap := s.M.Snapshot()
-	label := ""
-	for _, x := range snap.Devices {
-		if x.ID == d.ID {
-			label = fmt.Sprintf("%02d", x.No)
-			if n := x.Name; n != "" {
-				label += "-" + n
-			}
-		}
+	cfg, err := png.DecodeConfig(bytes.NewReader(body))
+	if err != nil || int64(cfg.Width)*int64(cfg.Height) > 16<<20 {
+		http.Error(w, "invalid PNG size", http.StatusBadRequest)
+		return
 	}
-	name := safeFile(label) + "-" + time.Now().Format("20060102-150405.000") + ".png"
-	if err := os.MkdirAll(s.ShotDir, 0o755); err != nil {
+	img, err := png.Decode(bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "invalid PNG", http.StatusBadRequest)
+		return
+	}
+	if err = device.WriteClipboardDIB(clipboardBitmap(img)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	path := filepath.Join(s.ShotDir, name)
-	if err := os.WriteFile(path, body, 0o644); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"path": path})
+	w.WriteHeader(http.StatusNoContent)
 }
 
-// safeFile keeps a name usable as a Windows file name.
-func safeFile(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) {
-			return '_'
+// CF_DIB with a 40-byte BITMAPINFOHEADER and bottom-up BGRX scanlines.
+func clipboardBitmap(img image.Image) []byte {
+	bounds := img.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	stride := width * 4
+	data := make([]byte, 40+stride*height)
+	binary.LittleEndian.PutUint32(data[0:], 40)
+	binary.LittleEndian.PutUint32(data[4:], uint32(width))
+	binary.LittleEndian.PutUint32(data[8:], uint32(height))
+	binary.LittleEndian.PutUint16(data[12:], 1)
+	binary.LittleEndian.PutUint16(data[14:], 32)
+	binary.LittleEndian.PutUint32(data[20:], uint32(stride*height))
+	line := image.NewRGBA(image.Rect(0, 0, width, 1))
+	for y := 0; y < height; y++ {
+		draw.Draw(line, line.Bounds(), img, image.Pt(bounds.Min.X, bounds.Min.Y+y), draw.Src)
+		row := data[40+(height-1-y)*stride:]
+		for x := 0; x < stride; x += 4 {
+			row[x], row[x+1], row[x+2] = line.Pix[x+2], line.Pix[x+1], line.Pix[x]
 		}
-		return r
-	}, s)
-	s = strings.Trim(s, " .")
-	if s == "" {
-		s = "iphone"
 	}
-	return s
+	return data
 }

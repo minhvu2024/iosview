@@ -34,12 +34,18 @@ const (
 // sysWriteClipboard writes text directly to the Windows system clipboard so
 // copies succeed even when the UI window loses focus or lacks a user gesture.
 func sysWriteClipboard(text string) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 
 	u16 := utf16.Encode([]rune(text))
 	u16 = append(u16, 0)
-	size := uintptr(len(u16) * 2)
+	return writeClipboardData(cfUnicodeText, unsafe.Slice((*byte)(unsafe.Pointer(&u16[0])), len(u16)*2))
+}
+
+func WriteClipboardDIB(data []byte) error { return writeClipboardData(8, data) }
+
+func writeClipboardData(format uintptr, data []byte) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	size := uintptr(len(data))
 
 	hMem, _, err := globalAlloc.Call(gmemMoveable, size)
 	if hMem == 0 {
@@ -50,8 +56,8 @@ func sysWriteClipboard(text string) error {
 		globalFree.Call(hMem)
 		return err
 	}
-	dst := unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(u16))
-	copy(dst, u16)
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data))
+	copy(dst, data)
 	globalUnlock.Call(hMem)
 
 	// The clipboard owner must be a window on this thread. Use the predefined
@@ -83,7 +89,7 @@ func sysWriteClipboard(text string) error {
 		return err
 	}
 
-	if r, _, err := setClipboardData.Call(cfUnicodeText, hMem); r == 0 {
+	if r, _, err := setClipboardData.Call(format, hMem); r == 0 {
 		globalFree.Call(hMem)
 		return err
 	}

@@ -1,10 +1,9 @@
 /* ==========================================================================
    iOSView Design System — Reusable Design Tokens
    Themes:
-     - Graphite & Paper (default, data-theme="light"): calm neutral light
-     - Carbon Dark      (data-theme="dark")          : low-glare charcoal dark
-   Philosophy: 95% neutral surfaces & ink, 1px hairlines, flat controls,
-   high contrast type (>= 4.5:1 muted, >= 12:1 primary), zero neon glow.
+     - Soft Mint        (default, data-theme="light"): slate and mint
+     - Carbon Dark      (data-theme="dark")          : low-glare navy dark
+   Device states use fixed-width borders and theme-specific elevation.
    ========================================================================== */
 
 @font-face {
@@ -33,144 +32,179 @@
   --sp-4: 16px;
 
   /* Radii */
-  --r-xs: 5px;
-  --r-sm: 7px;
-  --r-md: 10px;
-  --r-lg: 14px;
-  --r-tile: 14px;
-  --r-pill: 999px;
+  --r-xs: 4px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-tile: 16px;
+  --r-pill: 9999px;
 
   /* Motion */
-  --ease: 80ms cubic-bezier(.2, .7, .3, 1);
+  --ease: 100ms ease-out;
 
   /* Layout defaults */
   --tile-w: 150px;
-  --panel-w: 296px;
+  --panel-w: 320px;
+  --frame-width: 4px;
+  --frame-selected-width: 5px;
+  --selection-gradient: linear-gradient(160deg, var(--selection-color, var(--selection-default)) 0%, var(--selection-color, var(--selection-end)) 100%);
 }
 
-/* ---------------- Theme 1: Graphite & Paper (Light, Default) ---------------- */
+/* ---------------- Theme 1: Soft Mint (Light, Default) ---------------- */
 :root,
 :root[data-theme="light"] {
   color-scheme: light;
 
-  /* Surfaces */
-  --bg-canvas: #ECEEF0;
-  --bg-surface: #F9FAFB;
-  --bg-subtle: #F0F2F4;
-  --bg-hover: #E6E9ED;
-  --bg-elevated: #FFFFFF;
-  --bg-input: #FFFFFF;
+  /* Visible Soft Mint palette from the reference's styles. */
+  --bg-canvas: #E8ECEF;
+  --bg-topbar: #F8FAFC;
+  --bg-sidebar: #F8FAFC;
+  --bg-card: #FFFFFF;
+  --bg-muted: #F1F5F9;
+  --border-subtle: #CBD5E1;
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --accent-grad: linear-gradient(135deg, #047857 0%, #0F766E 100%);
+  --accent-soft: #ECFDF5;
+  --accent-text: #047857;
+  --overlay-num: #065F46;
 
-  /* Borders (1px hairlines) */
-  --border: #DCDFE4;
-  --border-strong: #C2C8D0;
+  /* iOSView component roles */
+  --bg-surface: var(--bg-sidebar);
+  --bg-subtle: var(--bg-muted);
+  --bg-hover: #E2E8F0;
+  --bg-elevated: var(--bg-card);
+  --bg-input: var(--bg-card);
+  --border: var(--border-subtle);
+  --border-strong: #64748B;
+  --text: var(--text-primary);
+  --text-2: var(--text-secondary);
+  --text-3: var(--text-secondary);
+  --accent: var(--accent-text);
+  --accent-hover: var(--overlay-num);
+  --accent-ink: var(--bg-card);
+  --accent-border: #A7F3D0;
+  --accent-fill: var(--accent-grad);
 
-  /* Text */
-  --text: #141619;
-  --text-2: #4B525B;
-  --text-3: #68707A;
-
-  /* Primary neutral accent */
-  --accent: #181A1D;
-  --accent-hover: #292D33;
-  --accent-ink: #F9FAFB;
-  --accent-soft: #E6E9EE;
-  --accent-border: #B5BCC6;
-
-  /* Semantic status (reserved for small indicators only) */
-  --status-online: #1F9D68;
-  --status-wifi: #2B6CB0;
-  --status-warn: #B47514;
-  --status-warn-bg: #FEF5E3;
-  --status-danger: #C9353B;
+  /* Status colors from the reference's Tailwind configuration. */
+  --status-online: #16A34A;
+  --status-wifi: #2563EB;
+  --status-warn: #D97706;
+  --warning-text: #943700;
+  --status-offline: #64748B;
+  --status-warn-bg: #FFEDE6;
+  --status-danger: #BA1A1A;
 
   /* Title bar & Brand header */
-  --tb-bg: #181A1D;
-  --tb-ink: #F3F4F6;
-  --tb-border: rgba(255, 255, 255, .08);
-  --tb-hover: rgba(255, 255, 255, .12);
+  --tb-bg: var(--bg-topbar);
+  --tb-ink: var(--text);
+  --tb-border: var(--border);
+  --tb-hover: var(--bg-hover);
+  --brand-bg: var(--accent-fill);
+  --brand-ink: var(--accent-ink);
+  --brand-hover: rgba(255, 255, 255, .16);
 
   /* Device tile & stage frames */
-  --frame-idle: #3A3F45;
-  --frame-idle-ink: #DCE0E5;
-  --frame-sel: #181A1D;
-  --frame-sel-ink: #F9FAFB;
-  --frame-sel-ring: #181A1D;
-  --frame-paused: #D3D7DD;
-  --frame-paused-ink: #272B30;
-  --screen-bg: #0D0F11;
+  --frame-border-default: var(--border-subtle);
+  --selection-default: #10B981;
+  --selection-end: #4F46E5;
+  --frame-idle: var(--bg-elevated);
+  --frame-idle-ink: var(--text-2);
+  --frame-sel: var(--bg-elevated);
+  --frame-sel-ink: var(--overlay-num);
+  --frame-paused: var(--bg-subtle);
+  --frame-paused-ink: var(--text-2);
+  --screen-bg: var(--text-primary);
+  --screen-placeholder: var(--bg-muted);
+  --screen-placeholder-ink: var(--text-secondary);
+  --screen-overlay: rgba(15, 23, 42, .55);
 
   /* Switches & controls */
-  --sw-track: #C5CBD3;
-  --sw-knob: #FFFFFF;
+  --sw-track: var(--border-subtle);
+  --sw-knob: var(--bg-card);
 
   /* Elevation (calm neutral shadows, zero color glow) */
-  --shadow-sm: 0 1px 2px rgba(15, 20, 25, .06);
+  --shadow-sm: none;
   --shadow-md: 0 8px 24px rgba(15, 20, 25, .10);
-  --shadow-tile: 0 2px 8px rgba(15, 20, 25, .14);
+  --shadow-tile: none;
+  --shadow-tile-selected: 0 8px 20px -6px rgba(16, 185, 129, .35);
   --shadow-stage: 0 16px 40px rgba(15, 20, 25, .24);
-  --focus-ring: 0 0 0 2px rgba(24, 26, 29, .22);
+  --focus-ring: 0 0 0 2px rgba(4, 120, 87, .24);
 }
 
-/* ---------------- Theme 2: Carbon Dark (Low-glare Charcoal) ---------------- */
+/* ---------------- Theme 2: Carbon Dark ---------------- */
 :root[data-theme="dark"] {
   color-scheme: dark;
 
   /* Surfaces */
-  --bg-canvas: #141618;
-  --bg-surface: #1B1E21;
-  --bg-subtle: #23272B;
-  --bg-hover: #2C3136;
-  --bg-elevated: #22262A;
-  --bg-input: #16191C;
+  --bg-canvas: #090E19;
+  --bg-surface: #131D2E;
+  --bg-subtle: #131D2E;
+  --bg-hover: #28374D;
+  --bg-elevated: #1E293B;
+  --bg-input: #131D2E;
 
   /* Borders */
-  --border: #2D3238;
-  --border-strong: #434B54;
+  --border: #334155;
+  --border-strong: #64748B;
 
   /* Text */
-  --text: #EAECEF;
-  --text-2: #A2AAB3;
-  --text-3: #7A838E;
+  --text: #F1F5F9;
+  --text-2: #94A3B8;
+  --text-3: #94A3B8;
 
-  /* Primary neutral accent */
-  --accent: #EAECEF;
-  --accent-hover: #FFFFFF;
-  --accent-ink: #141618;
-  --accent-soft: #2A2F35;
-  --accent-border: #4D5661;
+  /* Primary actions and selection */
+  --accent: #2563EB;
+  --accent-hover: #1D4ED8;
+  --accent-ink: var(--text);
+  --accent-soft: #1B3156;
+  --accent-border: #3B82F6;
+  --accent-fill: var(--accent);
+  --accent-text: #BFDBFE;
+  --focus-color: var(--accent-border);
 
   /* Semantic status */
-  --status-online: #2EA874;
-  --status-wifi: #5B9CE6;
-  --status-warn: #D99B38;
+  --status-online: #4ADE80;
+  --status-wifi: #60A5FA;
+  --status-warn: #FBBF24;
+  --warning-text: var(--status-warn);
+  --status-danger: #F87171;
+  --status-offline: var(--status-danger);
   --status-warn-bg: #2D2415;
-  --status-danger: #E25B60;
 
   /* Title bar & Brand header */
-  --tb-bg: #101214;
-  --tb-ink: #EAECEF;
-  --tb-border: #25292E;
-  --tb-hover: rgba(255, 255, 255, .10);
+  --tb-bg: var(--bg-canvas);
+  --tb-ink: var(--text);
+  --tb-border: var(--border);
+  --tb-hover: var(--bg-elevated);
+  --brand-bg: var(--tb-bg);
+  --brand-ink: var(--tb-ink);
+  --brand-hover: var(--tb-hover);
 
   /* Device tile & stage frames */
-  --frame-idle: #22262A;
-  --frame-idle-ink: #B7BFC8;
-  --frame-sel: #2E343B;
-  --frame-sel-ink: #F5F7F9;
-  --frame-sel-ring: #C8D0D8;
-  --frame-paused: #23282D;
-  --frame-paused-ink: #97A0AA;
-  --screen-bg: #08090A;
+  --frame-border-default: #7489A6;
+  --selection-default: #5EEAD4;
+  --selection-end: #A5B4FC;
+  --frame-idle: var(--bg-elevated);
+  --frame-idle-ink: var(--text-2);
+  --frame-sel: #233654;
+  --frame-sel-ink: var(--text);
+  --frame-paused: var(--bg-surface);
+  --frame-paused-ink: var(--text-2);
+  --screen-bg: var(--bg-canvas);
+  --screen-placeholder: var(--screen-bg);
+  --screen-placeholder-ink: var(--text-2);
+  --screen-overlay: rgba(16, 18, 20, .78);
 
   /* Switches & controls */
-  --sw-track: #3C434B;
-  --sw-knob: #141618;
+  --sw-track: var(--border-strong);
+  --sw-knob: var(--bg-canvas);
 
   /* Elevation */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .32);
   --shadow-md: 0 10px 28px rgba(0, 0, 0, .48);
-  --shadow-tile: 0 3px 10px rgba(0, 0, 0, .38);
+  --shadow-tile: 0 3px 10px rgba(153, 187, 221, .14);
+  --shadow-tile-selected: var(--shadow-tile);
   --shadow-stage: 0 18px 48px rgba(0, 0, 0, .62);
-  --focus-ring: 0 0 0 2px rgba(234, 236, 239, .24);
+  --focus-ring: 0 0 0 2px rgba(59, 130, 246, .40);
 }

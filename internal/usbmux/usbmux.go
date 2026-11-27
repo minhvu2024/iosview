@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"runtime"
@@ -229,7 +230,7 @@ type Event struct {
 
 // Listen streams attach/detach events until the connection drops.
 // The current device list is delivered as Attached events first.
-func Listen(events chan<- Event) error {
+func Listen(onEvent func(Event)) error {
 	c, err := dial()
 	if err != nil {
 		return err
@@ -249,10 +250,10 @@ func Listen(events chan<- Event) error {
 				return fmt.Errorf("usbmux Listen failed: %d", n)
 			}
 		case "Attached":
-			events <- Event{Attached: true, Device: parseDevice(m)}
+			onEvent(Event{Attached: true, Device: parseDevice(m)})
 		case "Detached":
 			id, _ := plist.Int(m["DeviceID"])
-			events <- Event{Attached: false, Device: Device{DeviceID: id}}
+			onEvent(Event{Attached: false, Device: Device{DeviceID: id}})
 		}
 	}
 }
@@ -265,13 +266,23 @@ func Connect(deviceID int64, port uint16) (net.Conn, error) {
 
 // ConnectContext reserves two handshake slots for foreground control.
 func ConnectContext(ctx context.Context, deviceID int64, port uint16, background bool) (net.Conn, error) {
+	trace := os.Getenv("IOSVIEW_H264_TIMING") == "1"
+	start := time.Now()
+	var slotWait time.Duration
+	if trace {
+		defer func() {
+			log.Printf("usbmux %d cổng %d: chờ suất %v, tổng %v", deviceID, port, slotWait, time.Since(start))
+		}()
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if background {
 		select {
 		case backgroundSem <- struct{}{}:
+			slotWait = time.Since(start)
 			defer func() { <-backgroundSem }()
 		case <-ctx.Done():
+			slotWait = time.Since(start)
 			return nil, ctx.Err()
 		}
 	}
@@ -279,13 +290,16 @@ func ConnectContext(ctx context.Context, deviceID int64, port uint16, background
 	if err != nil {
 		return nil, err
 	}
+	waitStart := time.Now()
 	select {
 	case handshakeSem <- struct{}{}:
 		defer func() { <-handshakeSem }()
 	case <-ctx.Done():
+		slotWait += time.Since(waitStart)
 		c.Close()
 		return nil, ctx.Err()
 	}
+	slotWait += time.Since(waitStart)
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
 	deadline, _ := ctx.Deadline()

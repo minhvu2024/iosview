@@ -71,6 +71,7 @@ func isEdgeNorm(x, y float64) bool {
 // device falls behind, so latency never accumulates; presses, releases and
 // keys are never dropped. Only one writer runs per device (see d.owner).
 func (d *Device) runWriter(c session) {
+	d.setScreenOff(false)
 	// The previous session may have ended with a finger (or Home/Power) still
 	// down: its release never reached the phone. Lift it before anything else.
 	if d.held.mask != 0 && c.PointerEvent(0, d.held.x, d.held.y) == nil {
@@ -187,12 +188,23 @@ func (d *Device) flush(c session, batch []Event) {
 	flushPtr()
 }
 
+func (d *Device) setScreenOff(off bool) {
+	d.m.mu.Lock()
+	changed := d.ScreenOff != off
+	d.ScreenOff = off
+	d.m.mu.Unlock()
+	if changed {
+		d.m.notify()
+	}
+}
+
 func (d *Device) pressButton(c session, b string, w, h int) {
 	cx, cy := w/2, h/2
-	tap := func(mask uint8, hold time.Duration) {
-		_ = c.PointerEvent(mask, cx, cy)
+	tap := func(mask uint8, hold time.Duration) bool {
+		down := c.PointerEvent(mask, cx, cy)
 		time.Sleep(hold)
-		_ = c.PointerEvent(0, cx, cy)
+		up := c.PointerEvent(0, cx, cy)
+		return down == nil && up == nil
 	}
 	key := func(ks uint32) {
 		_ = c.KeyEvent(ks, true)
@@ -211,13 +223,31 @@ func (d *Device) pressButton(c session, b string, w, h int) {
 		clearField(c)
 		return
 	case "home":
-		tap(maskHome, 60*time.Millisecond)
+		if tap(maskHome, 60*time.Millisecond) {
+			d.setScreenOff(false)
+		}
 	case "switcher":
 		tap(maskHome, 40*time.Millisecond)
 		time.Sleep(90 * time.Millisecond)
 		tap(maskHome, 40*time.Millisecond)
 	case "power":
-		tap(maskPower, 60*time.Millisecond)
+		if !d.ScreenOff {
+			if tap(maskPower, 60*time.Millisecond) {
+				d.setScreenOff(true)
+			}
+			return
+		}
+		if tap(maskHome, 60*time.Millisecond) {
+			// The first Home wakes the display. A separate Home press after
+			// the lock screen appears asks iOS to open or show authentication.
+			select {
+			case <-c.Done():
+				return
+			case <-time.After(900 * time.Millisecond):
+			}
+			tap(maskHome, 60*time.Millisecond)
+			d.setScreenOff(false)
+		}
 	case "back":
 		// iOS has no Back key: emulate the system edge-swipe from the left
 		// edge (works in apps using standard navigation, Safari, Settings…).

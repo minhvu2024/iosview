@@ -28,7 +28,8 @@ type Config struct {
 	WifiLinks map[string]string `json:"wifiLinks,omitempty"`
 	Names     map[string]string `json:"names"`
 	// Numbers: stable display number per device (01, 02 …), kept across runs.
-	Numbers map[string]int `json:"numbers,omitempty"`
+	Numbers map[string]int        `json:"numbers,omitempty"`
+	Parked  map[string]ParkedSlot `json:"parked,omitempty"`
 	// Tags: named groups of devices for one-click selection.
 	Tags      []Tag               `json:"tags,omitempty"`
 	SyncOn    bool                `json:"syncOn"`
@@ -45,6 +46,12 @@ type Config struct {
 	path     string
 	mu       sync.Mutex
 	savedSeq uint64
+}
+
+// ParkedSlot preserves the last known screen shape while the phone is absent.
+type ParkedSlot struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // Tag is a named group of device IDs.

@@ -51,3 +51,12 @@ Mã nguồn thử nghiệm cũng bỏ qua các khung cũ chưa bắt đầu gử
 Thử RootHide trên một máy với cùng video, FPS, độ phân giải và bitrate. So USB rồi Wi‑Fi, mỗi lần 10–15 phút, lần lượt với gói 1008 và gói thử. Trên PC 0.11.14, bật FPS rồi trỏ vào tên máy để xem thời gian từ lần nhận gói, giải mã và vẽ gần nhất, cùng p95/p99 khoảng cách giữa hai lần vẽ trong kỳ thống kê. Đọc các khoảng cách này trong lúc video đang phát vì màn hình tĩnh cũng có khoảng nghỉ dài.
 
 Mã nguồn phần thêm: thư mục `trollvnc-h264/` (H264Streamer.mm + patch cho TrollVNC, commit gốc trong BASE_COMMIT).
+
+### Bản thử phím tắt iPhone
+
+Trong cây nguồn TrollVNC đã có phần H.264 của iOSView, chép `trollvnc-h264/PhoneActions.h` vào `src/`, áp `phone-actions.patch` và đặt `PACKAGE_VERSION` thành `3.3-1009` khi build. Bản thử cho phép iOSView 0.11.20 lấy danh sách app, mở app theo mã định danh và yêu cầu iOS mở Trung tâm điều khiển qua phiên VNC đang điều khiển. Khi thử trên 6s/7, mở khóa máy rồi kiểm tra cả nút trên màn lớn và hai tổ hợp mặc định, từ màn hình chính và từ trong một ứng dụng.
+
+## Bản thử 3.3-1010 cho RootHide
+
+Gói `TrollVNC-iosview_3.3-1010_roothide.deb` dùng với iOSView 0.11.38. Khi mất hình, PC gửi yêu cầu chụp ngay trên luồng H.264 đang mở. Bit 4 trong byte cờ báo hỗ trợ lệnh `F + u16 token`. TrollVNC trả token ở byte 10–11 của khung lấy từ lần chụp sau yêu cầu. PC chỉ xác nhận khi vẽ được khung tương ứng hoặc khung mới hơn đã giải mã. PC vẫn dùng cách nối phụ với gói cũ. Khi cả hai khung đang mã hóa quá 3 giây và có khung mới đang chờ, TrollVNC thử dựng lại phiên mã hóa.
+

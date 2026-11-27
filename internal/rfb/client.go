@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -50,6 +51,8 @@ type Client struct {
 	clipKnown bool
 	clipWait  map[chan string]struct{}
 	closed    chan struct{}
+	actionSeq uint64
+	actions   map[uint64]chan actionReply
 	closeOnce sync.Once
 	err       error
 }
@@ -257,7 +260,7 @@ func (c *Client) Size() (int, int) {
 }
 
 // Name is the desktop name advertised by the server.
-func (c *Client) Name() string { return c.name }
+func (c *Client) Name() string { return strings.TrimSuffix(c.name, actionTag) }
 
 // Done is closed when the connection ends.
 func (c *Client) Done() <-chan struct{} { return c.closed }
@@ -466,6 +469,11 @@ func (c *Client) readLoop(poll time.Duration) {
 				return
 			}
 			if _, err := c.r.Discard(int(h.N) * 6); err != nil {
+				c.fail(err)
+				return
+			}
+		case 11:
+			if err := c.readAction(); err != nil {
 				c.fail(err)
 				return
 			}

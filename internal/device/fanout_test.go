@@ -147,6 +147,42 @@ func waitOnline(t *testing.T, m *Manager, n int) {
 	t.Fatalf("devices not online: %+v", m.Snapshot())
 }
 
+func TestTwentyIndependentPhones(t *testing.T) {
+	t.Setenv("USBMUXD_SOCKET_ADDRESS", "127.0.0.1:1")
+	cfg, _ := LoadConfig(filepath.Join(t.TempDir(), "c.json"))
+	phones := make([]*fakeVNC, 20)
+	for i := range phones {
+		phones[i] = newFakeVNC(t, 375, 667)
+		cfg.WifiDevices = append(cfg.WifiDevices, phones[i].ln.Addr().String())
+	}
+	m := NewManager(cfg)
+	waitOnline(t, m, len(phones))
+	m.SetSync(false)
+	for round := 0; round < 5; round++ {
+		for i, f := range phones {
+			id := "wifi:" + f.ln.Addr().String()
+			key := uint32('a' + i)
+			for _, down := range []bool{true, false} {
+				if n := m.Dispatch(id, Key(key, down)); n != 1 {
+					t.Fatalf("phone %d: expected one target, got %d", i, n)
+				}
+			}
+		}
+	}
+	for i, f := range phones {
+		waitFor(t, "five presses", func() bool { _, keys, _ := f.snapshot(); return len(keys) >= 5 })
+		_, keys, _ := f.snapshot()
+		if len(keys) != 5 {
+			t.Fatalf("phone %d: got %d presses", i, len(keys))
+		}
+		for _, k := range keys {
+			if k != uint32('a'+i) {
+				t.Fatalf("phone %d received another phone's key %d", i, k)
+			}
+		}
+	}
+}
+
 func TestSyncFanout(t *testing.T) {
 	t.Setenv("USBMUXD_SOCKET_ADDRESS", "127.0.0.1:1") // no usbmuxd in test
 	a := newFakeVNC(t, 390, 844)

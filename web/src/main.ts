@@ -6,13 +6,14 @@
 // control panel (buttons, sliders, tags).
 import RFB from "@novnc/novnc";
 import { H264View, h264Supported, type Profile } from "./h264";
+import { ico, type IconName } from "./icons";
 
 type Dev = {
   id: string; name: string; no: number; vncName: string; transport: "usb" | "wifi"; addr: string;
   kind?: "cd"; ios?: string;   // kind "cd": iOS 17+ without jailbreak (CoreDevice, HEVC)
   status: "connecting" | "online" | "offline" | "error"; error?: string;
-  width: number; height: number; inSync: boolean;
-  udid?: string; wifi?: string;   // wifi = LAN address of the same phone (fallback path)
+  width: number; height: number; inSync: boolean; screenOff?: boolean; parked?: boolean;
+  udid?: string; wifi?: string; wifiSync?: boolean;
 };
 type Tag = { name: string; ids: string[] };
 type State = {
@@ -51,40 +52,6 @@ let hoverId = "";             // device under the mouse
 const pad = (n: number) => String(n || 0).padStart(2, "0");
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
-// ---------------------------------------------------------------- icons
-const IC: Record<string, string> = {
-  back: `<path d="m12 19-7-7 7-7" /><path d="M19 12H5" />`,
-  home: `<circle cx="12" cy="12" r="7" />`,
-  switcher: `<path d="M2 3v18" /><rect width="12" height="18" x="6" y="3" rx="2" /><path d="M22 3v18" />`,
-  power: `<path d="M12 2v10" /><path d="M18.4 6.6a9 9 0 1 1-12.77.04" />`,
-  volup: `<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" /><path d="M16 9a5 5 0 0 1 0 6" /><path d="M19.364 18.364a9 9 0 0 0 0-12.728" />`,
-  voldown: `<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" /><path d="M16 9a5 5 0 0 1 0 6" />`,
-  mute: `<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" /><line x1="22" x2="16" y1="9" y2="15" /><line x1="16" x2="22" y1="9" y2="15" />`,
-  paste: `<path d="M11 14h10" /><path d="M16 4h2a2 2 0 0 1 2 2v1.344" /><path d="m17 18 4-4-4-4" /><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113" /><rect x="8" y="2" width="8" height="4" rx="1" />`,
-  selectall: `<path d="M14 21h1" /><path d="M14 3h1" /><path d="M19 3a2 2 0 0 1 2 2" /><path d="M21 14v1" /><path d="M21 19a2 2 0 0 1-2 2" /><path d="M21 9v1" /><path d="M3 14v1" /><path d="M3 9v1" /><path d="M5 21a2 2 0 0 1-2-2" /><path d="M5 3a2 2 0 0 0-2 2" /><path d="M7 12h10" /><path d="M7 16h6" /><path d="M7 8h8" /><path d="M9 21h1" /><path d="M9 3h1" />`,
-  clear: `<path d="M10 5a2 2 0 0 0-1.344.519l-6.328 5.74a1 1 0 0 0 0 1.481l6.328 5.741A2 2 0 0 0 10 19h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z" /><path d="m12 9 6 6" /><path d="m18 9-6 6" />`,
-  shot: `<path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z" /><circle cx="12" cy="13" r="3" />`,
-  rename: `<path d="M13 21h8" /><path d="m15 5 4 4" /><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />`,
-  expand: `<path d="M15 3h6v6" /><path d="m21 3-7 7" /><path d="m3 21 7-7" /><path d="M9 21H3v-6" />`,
-  full: `<path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M21 8V5a2 2 0 0 0-2-2h-3" /><path d="M3 16v3a2 2 0 0 0 2 2h3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" />`,
-  hash: `<line x1="4" x2="20" y1="9" y2="9" /><line x1="4" x2="20" y1="15" y2="15" /><line x1="10" x2="8" y1="3" y2="21" /><line x1="16" x2="14" y1="3" y2="21" />`,
-  unlink: `<path d="M15 7h2a5 5 0 0 1 0 10h-2m-6 0H7A5 5 0 0 1 7 7h2" />`,
-  link: `<path d="M9 17H7A5 5 0 0 1 7 7h2" /><path d="M15 7h2a5 5 0 1 1 0 10h-2" /><line x1="8" x2="16" y1="12" y2="12" />`,
-  sync: `<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" />`,
-  all: `<path d="M21 10.656V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12.344" /><path d="m9 11 3 3L22 4" />`,
-  none: `<rect width="18" height="18" x="3" y="3" rx="2" />`,
-  cursor: `<path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z" />`,
-  chev: `<path d="m6 17 5-5-5-5" /><path d="m13 17 5-5-5-5" />`,
-  chevl: `<path d="m11 17-5-5 5-5" /><path d="m18 17-5-5 5-5" />`,
-  moon: `<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" />`,
-  sun: `<circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" />`,
-  refresh: `<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" />`,
-  x: `<path d="M18 6 6 18" /><path d="m6 6 12 12" />`,
-  trash: `<path d="M10 11v6" /><path d="M14 11v6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />`,
-  cc: `<line x1="21" x2="14" y1="4" y2="4" /><line x1="10" x2="3" y1="4" y2="4" /><line x1="21" x2="12" y1="12" y2="12" /><line x1="8" x2="3" y1="12" y2="12" /><line x1="21" x2="16" y1="20" y2="20" /><line x1="12" x2="3" y1="20" y2="20" /><line x1="14" x2="14" y1="2" y2="6" /><line x1="8" x2="8" y1="10" y2="14" /><line x1="16" x2="16" y1="18" y2="22" />`,
-};
-const ico = (n: string, vb = "0 0 24 24") => `<svg viewBox="${vb}">${IC[n]}</svg>`;
-
 // ---------------------------------------------------------------- control WS
 let ws: WebSocket | null = null;
 // Bumped whenever the control link drops or comes back: a gesture begun on
@@ -95,7 +62,7 @@ let offlineWarned = false;
 const outbox: string[] = [];
 // Realtime input is never queued: replaying it after a reconnect would fire
 // stale taps/drags on the phones. Only settings-type messages wait.
-const REALTIME = new Set(["p", "w", "k", "text", "btn"]);
+const REALTIME = new Set(["p", "w", "k", "text", "btn", "phoneAction"]);
 function send(m: { t: string; [k: string]: unknown }) {
   const s = JSON.stringify(m);
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -131,13 +98,14 @@ function connectControl() {
     if (m.t === "state") applyState(m.state);
     else if (m.t === "clipboardCopy") rememberCopy(m.copy);
     else if (m.t === "textAck") textAcks.get(m.seq)?.(m.count);
+    else if (m.t === "phoneApps") receiveApps(m.seq, m.apps, m.error);
     else if (m.t === "wifi") finishWifi(m.seq, m.error);
     else if (m.t === "toast") toast(m.s);
   };
   sock.onclose = () => {
     if (ws !== sock) return;   // only one reconnect loop
     controlEpoch++;
-    wifiPending = 0;
+    if (wifiPending) finishWifi(wifiPending, "Mất kết nối, chưa xác nhận lưu danh sách Wi-Fi");
     for (const done of textAcks.values()) done(null);
     lastGroupCopy = null;
     lastCopySeq = 0;
@@ -155,9 +123,9 @@ function onPress(el: HTMLElement, fn: (e: MouseEvent) => void, stop = false) {
 
 // ---------------------------------------------------------------- tiles
 const NAV_BUTTONS =
-  `<button data-nav="switcher" title="Đa nhiệm">${ico("switcher")}</button>` +
-  `<button data-nav="home" title="Home">${ico("home")}</button>` +
-  `<button data-nav="back" title="Quay lại (vuốt từ mép trái)">${ico("back")}</button>`;
+  `<button data-nav="switcher" title="Đa nhiệm" aria-label="Đa nhiệm">${ico("switcher")}</button>` +
+  `<button data-nav="home" title="Về màn hình chính" aria-label="Về màn hình chính">${ico("home")}</button>` +
+  `<button data-nav="back" title="Quay lại (vuốt từ mép trái)" aria-label="Quay lại">${ico("back")}</button>`;
 
 function bindNav(bar: HTMLElement, id: () => string, onUse?: () => void) {
   bar.querySelectorAll<HTMLElement>("[data-nav]").forEach((b) => {
@@ -189,9 +157,11 @@ class Tile {
   fps = 0;
   bps = 0;
   visible = true;
+  private offscreenTimer = 0;
   occluded = false;       // completely hidden underneath the floating big screen
   wantQuality = state.quality;
   wantProfile: Profile = { fps: VIDEO_DEF.gf, pct: VIDEO_DEF.gs };
+  private preferSoftware = false;
   retry = 0;
   retryTimer = 0;
   hasPicture = false;     // true once a frame was drawn during this online session
@@ -204,11 +174,11 @@ class Tile {
     tileByEl.set(this.el, this);
     this.el.innerHTML = `
       <div class="t-head" title="Nhấp: chọn / bỏ chọn · Nhấp đúp hoặc ⤢: mở màn lớn · Chuột phải: menu">
-        <span class="badge"></span><span class="no" title="Nhấp đúp để đổi số máy"></span><span class="name" title="Nhấp đúp để đổi tên (F2)"></span><span class="dot"></span><button class="t-big" title="Mở màn lớn">${ico("expand")}</button>
+        <span class="badge"></span><span class="no" title="Nhấp đúp để đổi số"></span><span class="name"></span><span class="dot"></span><button class="t-big" title="Mở màn lớn">${ico("expand")}</button>
       </div>
       <div class="slot">
         <div class="host"><div class="view"></div><div class="overlay"></div><div class="msg"></div><div class="stat" hidden></div></div>
-        <div class="ctl-ph">${ico("cursor", "0 0 22 22")}<span>Đang ở màn lớn</span><small>nhấp để đóng</small></div>
+        <div class="ctl-ph">${ico("cursor")}<span>Đang ở màn lớn</span><small>nhấp để đóng</small></div>
       </div>
       <div class="navbar">${NAV_BUTTONS}</div>`;
     this.slot = this.el.querySelector(".slot")!;
@@ -222,19 +192,23 @@ class Tile {
     // click = toggle selection at once (a double click toggles twice, i.e.
     // leaves it as it was) · double click = big screen / rename / number
     head.onclick = (e) => {
-      if ((e.target as HTMLElement).closest("input, .t-big")) return;
+      if (this.dev.parked || (e.target as HTMLElement).closest("input, .t-big")) return;
       selAnchor = this.dev.id; toggleSel([this.dev.id]);
     };
     onPress(this.el.querySelector<HTMLElement>(".t-big")!, () => openBig(this.dev.id), true);
     head.ondblclick = (e) => {
-      if ((e.target as HTMLElement).closest("input")) return;
+      if (this.dev.parked || (e.target as HTMLElement).closest("input")) return;
       const tg = e.target as HTMLElement;
       if (tg.closest(".t-big")) return;
       if (tg.closest(".name")) this.rename();
       else if (tg.closest(".no")) inlineNumber(this.el.querySelector(".no")!, this.dev);
       else openBig(this.dev.id);
     };
-    head.oncontextmenu = (e) => { e.preventDefault(); openMenu(this.dev.id, e.clientX, e.clientY); };
+    this.el.oncontextmenu = (e) => {
+      if (!this.dev.parked && !(e.target as Element).closest(".t-head")) return;
+      e.preventDefault();
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) openMenu(this.dev.id, e.clientX, e.clientY);
+    };
     onPress(this.el.querySelector<HTMLElement>(".ctl-ph")!, () => closeBig(), true);
     this.el.addEventListener("pointerenter", () => { hoverId = this.dev.id; });
     this.el.addEventListener("pointerleave", () => { if (hoverId === this.dev.id) hoverId = ""; });
@@ -249,20 +223,22 @@ class Tile {
 
   update(dev: Dev) {
     const was = this.dev.status;
-    const oldTransport = this.dev.transport;
+    const old = this.dev;
     this.dev = dev;
-    if (dev.transport !== oldTransport && this.rfb) this.disconnect(); // cable plugged / unplugged: reconnect on the new path
+    if (this.rfb && (dev.transport !== old.transport || dev.addr !== old.addr || !!dev.wifiSync !== !!old.wifiSync)) this.disconnect();
     const q = (s: string) => this.el.querySelector<HTMLElement>(s)!;
     const badge = q(".badge");
     badge.textContent = dev.status !== "online" ? (dev.transport === "usb" ? "USB" : "Wi‑Fi") : dev.transport === "usb" ? (dev.wifi ? "USB+" : "USB") : "Wi‑Fi";
     badge.dataset.t = dev.status === "online" ? dev.transport : "off";
-    badge.title = dev.wifi && dev.transport === "usb" ? `Ưu tiên cáp USB; Wi‑Fi ${dev.wifi} dự phòng` : dev.transport === "wifi" ? dev.addr : "";
+    badge.title = dev.wifiSync ? "Wi‑Fi qua dịch vụ Apple" : dev.wifi && dev.transport === "usb" ? `Ưu tiên cáp USB; Wi‑Fi ${dev.wifi} dự phòng` : dev.transport === "wifi" ? dev.addr : "";
     const noEl = this.el.querySelector<HTMLElement>(".no");
     if (noEl) noEl.textContent = pad(dev.no);
-    if (this.nameEl.isConnected) this.nameEl.textContent = this.label();
+    if (this.nameEl.parentElement) this.nameEl.textContent = this.label();
     q(".dot").dataset.s = dev.status;
     q(".dot").title = statusText(dev);
     this.el.classList.toggle("off", dev.status !== "online");
+    this.el.classList.toggle("parked", !!dev.parked);
+    this.el.title = dev.parked ? "Đã tạm bỏ · Chuột phải để đưa máy trở lại" : "";
     if (dev.width && dev.height) {
       const ar = `${dev.width} / ${dev.height}`;
       this.el.style.setProperty("--ar", ar);
@@ -270,7 +246,7 @@ class Tile {
     }
     if (dev.status !== "online") {
       this.hasPicture = false;
-      this.host.classList.remove("live");
+      this.host.classList.remove("live", "has-picture");
       this.view.querySelector("canvas.h264")?.remove();
       this.msg.textContent = dev.status === "connecting" ? "Đang kết nối…" : (dev.error || "Mất kết nối");
     } else if (!this.hasPicture) {
@@ -284,18 +260,39 @@ class Tile {
   // selection / main-phone / filter classes
   paint() {
     const d = this.dev;
-    this.el.classList.toggle("sel", d.inSync);
+    this.el.classList.toggle("sel", !d.parked && d.inSync);
+    this.host.classList.toggle("screen-off", !!d.screenOff);
+    if (this.rfb instanceof H264View) this.rfb.screenOff = !!d.screenOff;
     this.el.classList.toggle("paused", d.inSync && !state.syncOn);
-    this.el.classList.toggle("master", prefs.big && d.id === masterId());
+    const primary = d.id === masterId();
+    this.el.classList.toggle("master", prefs.big && primary);
     this.el.classList.toggle("staged", this.host.parentElement !== this.slot);
     this.el.hidden = !passesFilter(d);
   }
 
   // connect / disconnect the viewer depending on device status + visibility
+  setVisible(visible: boolean) {
+    if (this.visible === visible) return;
+    this.visible = visible;
+    this.sync();
+  }
+
   sync() {
-    const want = this.dev.status === "online" && !pageHidden && (this.visible || isBig(this));
-    if (want && !this.rfb && !this.retryTimer) this.connect();
-    if (!want && this.rfb) this.disconnect();
+    const online = !this.dev.parked && this.dev.status === "online" && !pageHidden;
+    const shown = isBig(this) || (!fullTile && this.visible);
+    if (online && !shown && this.rfb) {
+      // Keep the viewer through brief scrolling and full-window switches.
+      if (!this.offscreenTimer) this.offscreenTimer = window.setTimeout(() => {
+        this.offscreenTimer = 0;
+        this.disconnect();
+      }, 3000);
+      return;
+    }
+    clearTimeout(this.offscreenTimer);
+    this.offscreenTimer = 0;
+    if (online && shown) {
+      if (!this.rfb && !this.retryTimer) this.connect();
+    } else if (this.rfb) this.disconnect();
   }
 
   connect() {
@@ -311,11 +308,14 @@ class Tile {
   connectH264() {
     this.wantProfile = desiredProfile(this);
     if (!this.hasPicture) this.msg.textContent = "Đang mở hình…";
-    const v = new H264View(this.view, `ws://${WS_HOST}/ws/h264/${encodeURIComponent(this.dev.id)}`, this.wantQuality, this.wantProfile, this.dev.kind === "cd");
+    const v = new H264View(this.view, `ws://${WS_HOST}/ws/h264/${encodeURIComponent(this.dev.id)}` + (this.dev.kind === "cd" ? "" : "?ready=1"),
+      this.wantQuality, this.wantProfile, this.dev.kind === "cd", () => isSmall(this), this.preferSoftware);
+    v.onSoftwareFrame = () => { this.preferSoftware = true; };
     v.onframe = () => { if (this.rfb === v) this.frames++; };
     v.onbytes = (n) => { if (this.rfb === v) this.bytes += n; };
     v.paused = isBackgrounded(this);   // hidden behind full-window or floating big screen
-    v.onfirst = () => { clearTimeout(this.firstTimer); this.hasPicture = true; this.host.classList.add("live"); this.retry = 0; };
+    v.screenOff = !!this.dev.screenOff;
+    v.onfirst = () => { clearTimeout(this.firstTimer); this.hasPicture = true; this.host.classList.add("live", "has-picture"); this.retry = 0; };
     v.onclose = () => {
       if (this.rfb !== v) return;
       clearTimeout(this.firstTimer);
@@ -335,7 +335,9 @@ class Tile {
     };
     clearTimeout(this.firstTimer);
     // stream connected (or connecting) but no picture: reconnect it
-    this.firstTimer = window.setTimeout(() => { if (this.rfb === v && !v.decodedFrame) v.disconnect(); }, this.dev.kind === "cd" ? 20000 : 6000);
+    const firstDeadline = (ms: number) => window.setTimeout(() => { if (this.rfb === v && !v.decodedFrame) v.disconnect(); }, ms);
+    this.firstTimer = firstDeadline(this.dev.kind === "cd" ? 20000 : 6500);
+    v.onready = () => { clearTimeout(this.firstTimer); this.firstTimer = firstDeadline(6000); };
     this.rfb = v;
   }
 
@@ -391,7 +393,9 @@ class Tile {
     this.frames = 0; this.bytes = 0;
     this.stat.hidden = !prefs.stats || !this.rfb;
     const timing = this.rfb instanceof H264View ? this.rfb.timingSummary(!this.stat.hidden && !this.rfb.paused) : "";
-    if (this.nameEl.title !== timing) this.nameEl.title = timing;
+    const title = `${this.nameEl.textContent} · Nhấp đúp để đổi tên`;
+    if (this.nameEl.title !== title) this.nameEl.title = title;
+    if (this.stat.title !== timing) this.stat.title = timing;
     if (!this.stat.hidden) {
       const r = this.rfb;
       const p = this.wantProfile;
@@ -423,6 +427,8 @@ class Tile {
   canvas(): HTMLCanvasElement | null { return this.view.querySelector("canvas"); }
 
   destroy() {
+    clearTimeout(this.offscreenTimer);
+    tileByEl.delete(this.el);
     clearTimeout(this.retryTimer);
     this.disconnect();
     this.host.remove();
@@ -436,9 +442,7 @@ const io = new IntersectionObserver((entries) => {
   for (const e of entries) {
     const t = tileByEl.get(e.target);
     if (!t) continue;
-    t.visible = e.isIntersecting;
-    // pause off-screen viewers after a grace period to save CPU/bandwidth
-    if (!t.visible) setTimeout(() => t.sync(), 3000); else t.sync();
+    t.setVisible(e.isIntersecting);
   }
 }, { rootMargin: "200px" });
 
@@ -465,7 +469,8 @@ let maxBig = false;
 let fullTile: Tile | null = null;
 
 function masterId(): string {
-  if (prefs.master && tiles.has(prefs.master)) return prefs.master;
+  const t = tiles.get(prefs.master);
+  if (t && !t.dev.parked) return prefs.master;
   return "";
 }
 function masterTile(): Tile | null { return tiles.get(masterId()) || null; }
@@ -473,15 +478,17 @@ function stagedTile(): Tile | null { return prefs.big ? masterTile() : null; }
 function isBig(t: Tile) { return fullTile === t || stagedTile() === t; }
 
 function setMaster(id: string) {
-  if (!tiles.has(id)) return;
+  const t = tiles.get(id);
+  if (!t || t.dev.parked) return;
   prefs.master = id;
   lsSet("iosview.master", id);
-  setActive(tiles.get(id)!);
+  setActive(t);
   layout();
 }
 // Big screen: opened on demand for one phone, closed to give the grid the room.
 function openBig(id: string) {
-  if (!tiles.has(id)) return;
+  const t = tiles.get(id);
+  if (!t || t.dev.parked) return;
   prefs.big = true; lsSet("iosview.big", "1");
   renderButtons();
   setMaster(id);
@@ -658,7 +665,7 @@ bindNav($("#stageNav"), () => masterId());
 // ---------------------------------------------------------------- selection
 function syncCount() { return state.devices.filter((d) => d.inSync && d.status === "online").length; }
 function toggleSel(ids: string[], on?: boolean) {
-  const devs = state.devices.filter((d) => ids.includes(d.id));
+  const devs = state.devices.filter((d) => !d.parked && ids.includes(d.id));
   if (!devs.length) return;
   const val = on ?? !devs.every((d) => d.inSync);
   for (const d of devs) d.inSync = val;              // optimistic, server confirms
@@ -708,6 +715,13 @@ function applyState(s: State) {
     } else if (Object.keys(d).some((key) => d[key as keyof Dev] !== t?.dev[key as keyof Dev]) ||
                Object.keys(t.dev).length !== Object.keys(d).length) {
       const old = t.dev;
+      if (old.parked !== d.parked) {
+        countsChanged = tagCellsChanged = needsLayout = true;
+        if (d.parked && prefs.master === d.id && prefs.big) {
+          prefs.big = false;
+          lsSet("iosview.big", "0");
+        }
+      }
       if (old.inSync !== d.inSync || (old.status === "online") !== (d.status === "online")) countsChanged = true;
       if (old.name !== d.name || old.vncName !== d.vncName || old.no !== d.no) tagCellsChanged = true;
       if (isBig(t)) {
@@ -732,7 +746,10 @@ function applyState(s: State) {
     t.destroy(); tiles.delete(id);
   }
   // first run: the first phone becomes the main phone
-  if (!masterId() && s.devices.length) { prefs.master = s.devices[0].id; lsSet("iosview.master", prefs.master); }
+  if (!masterId()) {
+    const firstPhone = s.devices.find((d) => !d.parked);
+    if (firstPhone) { prefs.master = firstPhone.id; lsSet("iosview.master", prefs.master); }
+  }
   if (prefs.tag && !s.tags.some((x) => x.name === prefs.tag)) { prefs.tag = ""; needsLayout = true; }
 
   if (first || previous.devices.length !== s.devices.length) $("#empty").hidden = s.devices.length > 0;
@@ -745,6 +762,7 @@ function applyState(s: State) {
     connTab.title = s.usbError ? "Có lỗi kết nối USB — xem chi tiết" : "";
   }
   if (countsChanged || s.syncOn !== previous.syncOn) renderButtons();
+  else if (tagCellsChanged) renderControlScope();
   if (first || s.quality !== previous.quality || s.focusQuality !== previous.focusQuality) syncSliders();
   if (first || s.vncPort !== previous.vncPort || JSON.stringify(s.wifiDevices) !== JSON.stringify(previous.wifiDevices)) fillWifi();
   if (needsLayout || pwChanged) layout();
@@ -762,11 +780,22 @@ function renderFooter() {
   const online = state.devices.filter((d) => d.status === "online").length;
   const sel = state.devices.filter((d) => d.inSync).length;
   const info = document.getElementById("selinfo");
-  if (info) info.textContent = `${sel}/${state.devices.length} chọn · ${online} online`;
+  if (info) info.textContent = `${sel}/${state.devices.filter((d) => !d.parked).length} chọn · ${online} online`;
   $("#ftInfo").textContent = `${state.devices.length} máy · ${online} online`;
 }
 
 // ---------------------------------------------------------------- rename
+document.addEventListener("pointerdown", (event) => {
+  const input = document.activeElement;
+  if (input instanceof HTMLInputElement && input.hasAttribute("data-device-edit") && input !== event.target) input.blur();
+}, true);
+
+function focusDeviceEditor(input: HTMLInputElement) {
+  input.dataset.deviceEdit = "";
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
 function inlineRename(target: HTMLElement, d: Dev) {
   if (!target.isConnected) return;
   const inp = document.createElement("input");
@@ -776,7 +805,7 @@ function inlineRename(target: HTMLElement, d: Dev) {
   inp.placeholder = d.vncName || shortId(d);
   inp.setAttribute("aria-label", `Tên máy ${pad(d.no)}`);
   target.replaceWith(inp);
-  inp.focus(); inp.select();
+  focusDeviceEditor(inp);
   let done = false;
   const finish = (ok: boolean) => {
     if (done) return;
@@ -799,19 +828,21 @@ function inlineNumber(target: HTMLElement, d: Dev) {
   if (!target.isConnected) return;
   const inp = document.createElement("input");
   inp.className = "rename-in num-in";
-  inp.type = "number"; inp.min = "1"; inp.max = "999";
+  inp.inputMode = "numeric";
   inp.value = String(d.no);
   inp.setAttribute("aria-label", `Số máy (đang là ${pad(d.no)})`);
   target.replaceWith(inp);
-  inp.focus(); inp.select();
+  focusDeviceEditor(inp);
   let done = false;
   const finish = (ok: boolean) => {
     if (done) return;
     done = true;
     inp.replaceWith(target);
-    const n = parseInt(inp.value, 10);
-    if (!ok || !n || n === d.no) return;
-    if (n < 1 || n > 999) { toast("Số máy phải từ 1 đến 999"); return; }
+    if (!ok) return;
+    const raw = inp.value.trim();
+    const n = Number(raw);
+    if (!/^\d{1,3}$/.test(raw) || n < 1) { toast("Số máy phải từ 1 đến 999"); return; }
+    if (n === d.no) return;
     const other = state.devices.find((x) => x.no === n && x.id !== d.id);
     send({ t: "number", d: d.id, no: n });
     target.textContent = pad(n);
@@ -839,15 +870,10 @@ function renameDevice(id: string) {
 // ---------------------------------------------------------------- big-screen toolbar
 // The main phone's own actions sit right under its big screen (where the
 // mouse already is); everything else is in the context menu.
-type Fn = { k: string; label: string; icon: string; kbd?: string };
+type Fn = { k: string; label: string; icon: IconName; kbd?: string };
 const STAGE_FNS: Fn[] = [
-  { k: "#rename", label: "Đổi tên", icon: "rename", kbd: "F2" },
-  { k: "#paste", label: "Dán từ PC", icon: "paste", kbd: "Ctrl+V" },
-  { k: "selectall", label: "Chọn hết chữ", icon: "selectall" },
-  { k: "clear", label: "Xoá ô nhập", icon: "clear", kbd: "Ctrl+⌫" },
   { k: "cc", label: "Cài đặt nhanh", icon: "cc" },
-  { k: "mute", label: "Tắt / bật tiếng", icon: "mute" },
-  { k: "#shot", label: "Chụp màn hình", icon: "shot" },
+  { k: "#shot", label: "Sao chép ảnh màn hình", icon: "shot" },
   { k: "#full", label: "Toàn cửa sổ (bấm lại để về cỡ thường)", icon: "full" },
   { k: "#close", label: "Đóng màn lớn", icon: "x" },
 ];
@@ -859,16 +885,10 @@ onPress($("#stageTools"), (e) => {
   if (!b || !t) return;
   setActive(t);
   const k = b.dataset.fn!;
-  if (k === "#rename") renameDevice(t.dev.id);
-  else if (k === "#paste") pasteFromPC(t.dev.id, { one: e.altKey });
-  else if (k === "#shot") shoot([t]);
+  if (k === "#shot") void shoot(t);
   else if (k === "#full") toggleMax(t);
   else if (k === "#close") closeBig();
-  else {
-    send({ t: "btn", d: t.dev.id, b: k });
-    if (k === "selectall") toast("Đang chọn hết văn bản trên máy…");
-    if (k === "clear") toast("Đang xoá nội dung ô nhập…");
-  }
+  else navPress(t, k, e.altKey);
 });
 
 // Caption under the big screen; the details (link, size, iOS…) are its tooltip.
@@ -876,7 +896,7 @@ function renderStageCap() {
   const t = stagedTile();
   if (!t) return;
   const d = t.dev;
-  const via = d.transport === "usb" ? "USB" + (d.wifi ? ` · Wi‑Fi ${d.wifi} dự phòng` : "") : `Wi‑Fi ${d.addr}`;
+  const via = d.transport === "usb" ? "USB" + (d.wifi ? ` · Wi‑Fi ${d.wifi} dự phòng` : "") : d.wifiSync ? "Wi‑Fi qua dịch vụ Apple" : `Wi‑Fi ${d.addr}`;
   const lines = [
     statusText(d), via,
     d.width ? `${d.width}×${d.height}` : "",
@@ -902,22 +922,33 @@ function openMenu(id: string, x: number, y: number) {
   const d = t.dev;
   const cands = d.transport === "wifi" && !d.udid ? usbCandidates() : [];
   let h = `<div class="mh">${pad(d.no)} · ${esc(t.label())}</div>`;
-  h += `<button data-m="rename">${ico("rename")}Đổi tên…<kbd>F2</kbd></button>`;
-  h += `<button data-m="number">${ico("hash")}Đổi số máy…</button>`;
-  h += prefs.big && id === masterId()
-    ? `<button data-m="closebig">${ico("expand")}Đóng màn lớn</button>`
-    : `<button data-m="master">${ico("expand")}Mở màn lớn</button>`;
-  h += `<button data-m="sel">${ico(d.inSync ? "none" : "all")}${d.inSync ? "Bỏ chọn" : "Chọn"} (nhóm đồng bộ)</button>`;
-  h += `<button data-m="full">${ico("full")}Toàn cửa sổ</button>`;
-  h += `<button data-m="cc">${ico("cc")}Mở Cài đặt nhanh</button>`;
-  h += `<button data-m="shot">${ico("shot")}Chụp màn hình</button>`;
-  const vo = ui.video?.dev?.[id];
-  h += `<button data-m="video">${ico("full")}Hình riêng cho máy này…${vo ? `<kbd>${vo.f}fps ${vo.s}%</kbd>` : ""}</button>`;
-  if (cands.length) {
-    h += `<hr><div class="mh">GỘP VỚI MÁY USB</div>`;
-    h += cands.map((c) => `<button data-link="${esc(c.id)}">${ico("link")}${pad(c.no)} · ${esc(c.name || c.vncName || shortId(c))}</button>`).join("");
+  if (d.parked) {
+    h += `<button data-m="park">${ico("restore")}Đưa máy trở lại</button>`;
+  } else {
+    h += `<button data-m="rename">${ico("rename")}Đổi tên…<kbd>F2</kbd></button>`;
+    h += `<button data-m="number">${ico("hash")}Đổi số máy…</button>`;
+    h += prefs.big && id === masterId()
+      ? `<button data-m="closebig">${ico("x")}Đóng màn lớn</button>`
+      : `<button data-m="master">${ico("expand")}Mở màn lớn</button>`;
+    h += `<button data-m="sel">${ico(d.inSync ? "none" : "all")}${d.inSync ? "Bỏ chọn" : "Chọn"} (nhóm đồng bộ)</button>`;
+    h += `<button data-m="full">${ico("full")}Toàn cửa sổ</button>`;
+    h += `<button data-m="paste">${ico("paste")}Dán vào máy này</button>
+      <button data-m="selectall">${ico("selectall")}Chọn hết chữ</button>
+      <button data-m="clear">${ico("clear")}Xóa nội dung ô nhập</button>
+      <button data-m="voldown">${ico("voldown")}Giảm âm lượng</button>
+      <button data-m="volup">${ico("volup")}Tăng âm lượng</button>
+      <button data-m="mute">${ico("mute")}Tắt / bật tiếng</button>`;
+    h += `<button data-m="cc">${ico("cc")}Mở Cài đặt nhanh</button>`;
+    h += `<button data-m="shot">${ico("shot")}Sao chép ảnh máy này</button>`;
+    const vo = ui.video?.dev?.[id];
+    h += `<button data-m="video">${ico("cc")}Hình riêng cho máy này…${vo ? `<kbd>${vo.f}fps ${vo.s}%</kbd>` : ""}</button>`;
+    if (cands.length) {
+      h += `<hr><div class="mh">GỘP VỚI MÁY USB</div>`;
+      h += cands.map((c) => `<button data-link="${esc(c.id)}">${ico("link")}${pad(c.no)} · ${esc(c.name || c.vncName || shortId(c))}</button>`).join("");
+    }
+    if (d.wifi) h += `<hr><button class="red" data-m="remove">${ico(d.udid ? "unlink" : "trash")}${d.udid ? "Bỏ kết nối Wi‑Fi" : "Xoá máy Wi‑Fi"}</button>`;
+    h += `<hr><button data-m="park">${ico("park")}Tạm bỏ máy<kbd>${esc(fmtKey(keys.park))}</kbd></button>`;
   }
-  if (d.wifi) h += `<hr><button class="red" data-m="remove">${ico(d.udid ? "unlink" : "trash")}${d.udid ? "Bỏ kết nối Wi‑Fi" : "Xoá máy Wi‑Fi"}</button>`;
   const m = $("#menu");
   m.innerHTML = h;
   m.dataset.id = id;
@@ -941,9 +972,13 @@ $("#menu").onclick = (e) => {
     case "number": renumber(id); break;
     case "sel": toggleSel([id]); break;
     case "full": toggleMax(t); break;
-    case "cc": navPress(t, "cc"); break;
-    case "shot": shoot([t]); break;
+    case "paste": void pasteFromPC(id, { one: true }); break;
+    case "selectall": case "clear": case "voldown": case "volup": case "mute":
+      navPress(t, b.dataset.m, true); break;
+    case "cc": navPress(t, "cc", true); break;
+    case "shot": shoot(t); break;
     case "video": videoOverride(id); break;
+    case "park": togglePark(t); break;
     case "remove": send({ t: "remove", d: id }); break;
   }
 };
@@ -1080,6 +1115,15 @@ function screenRect(c: HTMLCanvasElement) {
   return { left, top, width: w, height: h, right: left + w, bottom: top + h };
 }
 
+function togglePark(t: Tile, useSelection = false) {
+  if (useSelection && t.dev.inSync && !t.dev.parked) {
+    const ids = state.devices.filter(d => d.inSync && !d.parked).map(d => d.id);
+    send({ t: "park", ids, on: true });
+  } else {
+    send({ t: "park", d: t.dev.id, on: !t.dev.parked });
+  }
+}
+
 // Normalised (0..1) position of a pointer event on the device screen.
 function norm(t: Tile, e: { clientX: number; clientY: number }) {
   const c = t.canvas();
@@ -1107,6 +1151,7 @@ const HOLD_MS = 450;
 
 // A hardware-button action on phone t (no on-screen feedback).
 function navPress(t: Tile, b: string, one = false) {
+  if (t.dev.parked) return;
   setActive(t);
   send({ t: "btn", d: t.dev.id, b, one: one || undefined });
 }
@@ -1177,6 +1222,15 @@ function bindInput(t: Tile) {
   ov.addEventListener("contextmenu", (e) => e.preventDefault());
   ov.addEventListener("pointerenter", () => { hoverId = id(); });
   ov.addEventListener("pointerdown", (e) => {
+    if (e.button === 2) {
+      e.preventDefault();
+      cancelHold();
+      if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+      holdOne = e.altKey;
+      ov.setPointerCapture(e.pointerId);
+      holdTimer = window.setTimeout(() => { holdTimer = -1; navPress(t, "switcher", holdOne); }, HOLD_MS);
+      return;
+    }
     // Zoom mode (Ctrl+S): small screens are view-only — a left click anywhere
     // on one (picture or not) shows the phone big at once, a right click
     // closes the big screen. Otherwise every click is a tap, sent at once
@@ -1184,7 +1238,6 @@ function bindInput(t: Tile) {
     if (prefs.zoomTap && isSmall(t) && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
       e.preventDefault();
       if (e.button === 0) openBig(id());
-      else if (e.button === 2) closeBig();
       return;
     }
     const c = t.canvas();
@@ -1203,13 +1256,6 @@ function bindInput(t: Tile) {
     e.preventDefault();
     setActive(t);
     if (e.button === 1) { navPress(t, "home", e.altKey); return; }
-    if (e.button === 2) {
-      cancelHold();
-      holdOne = e.altKey;
-      ov.setPointerCapture(e.pointerId);
-      holdTimer = window.setTimeout(() => { holdTimer = -1; navPress(t, "switcher", holdOne); }, HOLD_MS);
-      return;
-    }
     if (e.button !== 0) return;
     if (e.shiftKey && !twoFingerWarned) { twoFingerWarned = true; toast("Điều khiển hai ngón (Shift) chưa hỗ trợ — đang chạm một ngón"); }
     ov.setPointerCapture(e.pointerId);
@@ -1298,10 +1344,18 @@ function bindInput(t: Tile) {
   }, { passive: false });
 }
 
-function setActive(t: Tile) { activeId = t.dev.id; }
+function setActive(t: Tile) {
+  if (t.dev.parked || activeId === t.dev.id) return;
+  activeId = t.dev.id;
+  renderControlScope();
+}
 
 // Keyboard → phone under the mouse, else the full view / main phone / last touched.
-function keyTarget() { return hoverId || fullTile?.dev.id || activeId || masterId(); }
+function keyTarget() {
+  if (hoverId && tiles.has(hoverId)) return tiles.get(hoverId)?.dev.parked ? "" : hoverId;
+  const active = tiles.get(activeId);
+  return fullTile?.dev.id || (active && !active.dev.parked ? activeId : "") || masterId();
+}
 
 // Special (non-text) keys forwarded as a single down+up — never held, so a
 // modifier can never get stuck on the phone.
@@ -1331,28 +1385,18 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Alt") { e.preventDefault(); setSolo(true); return; }   // never the window menu
   const combo = comboOf(e);
   const act = actOf(combo);
+  if (act === "shortcuts") {
+    e.preventDefault();
+    if (!e.repeat && !document.querySelector("dialog[open]")) openKeys();
+    return;
+  }
   if (isTyping(e)) {
-    if (act === "notesClose" && notesOpen()) { e.preventDefault(); closeNotes(); }
+    if ((act === "notesClose" || act === "notes") && notesOpen()) { e.preventDefault(); closeNotes(); }
     else if (act === "notes" || combo === "Ctrl+R") e.preventDefault();    // never reload the window
     return;
   }
-  if (combo === "Ctrl+C" && document.hasFocus()) {
-    e.preventDefault();
-    if (!e.repeat) void copyFromPhones();
-    return;
-  }
-  if (document.querySelector("dialog[open]")) return;   // dialogs handle their own keys
-  if (e.key === "F4" && !e.altKey) { e.preventDefault(); toggleSync(); return; }
-  if (e.key === "F2") { e.preventDefault(); const d = hoverId || activeId || masterId(); if (d) renameDevice(d); return; }
-  if (e.key === "Escape") {
-    e.preventDefault();
-    if (!$("#menu").hidden) { $("#menu").hidden = true; return; }
-    const t = tiles.get(keyTarget());
-    if (t && !e.repeat) navPress(t, "back", e.altKey);     // Esc = Back on the phone
-    return;
-  }
-  if (e.key === "F5") { if (WAILS) { e.preventDefault(); location.reload(); } return; }   // Wails: browser keys are off
-  if (e.key === "F11" || e.key === "F12") return;   // leave window keys alone
+  if (document.querySelector("dialog[open]")) return;
+  if (e.key === "Escape" && !$("#menu").hidden) { e.preventDefault(); $("#menu").hidden = true; return; }
   // Never forward bare modifier keys to the phone (that left Ctrl/Shift stuck
   // "down" on the device and corrupted the next paste).
   if (["Control", "Shift", "Meta", "CapsLock", "ContextMenu"].includes(e.key)) return;
@@ -1362,21 +1406,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if ((e.ctrlKey || e.metaKey) && !e.altKey) {
-    const k = e.key.toLowerCase();
-    e.preventDefault();                // swallow every other Ctrl/⌘ combo (no reload, print…)
-    if (e.repeat && !k.startsWith("arrow")) return;
-    if (k === "a") { selectAllPhones(); return; }
-    if (k === "s") { toggleZoomTap(); return; }
-    if (k === "arrowleft" || k === "arrowup") { switchBig(-1); return; }
-    if (k === "arrowright" || k === "arrowdown") { switchBig(1); return; }
-    const d = keyTarget();
-    if (!d) return;
-    const kt = tiles.get(d);
-    if (kt) setActive(kt);
-    if (k === "backspace" || k === "delete") { send({ t: "btn", d, b: "clear" }); toast("Đang xoá nội dung ô nhập…"); return; }
-    if (["c", "x", "z", "y"].includes(k)) {
-      sendCommand(d, k);
-    }
+    e.preventDefault();
     return;
   }
   const d = keyTarget();
@@ -1478,9 +1508,14 @@ async function sendPasteRows(rows: { id: string; text: string; device?: Dev }[],
   toast([`Đã xếp lệnh dán cho ${sent} máy`, ...notes].join(" · "));
 }
 
-function pasteText(d: string, text: string, opt: { force?: boolean; one?: boolean } = {}) {
+async function pasteText(d: string, text: string, opt: { force?: boolean; one?: boolean } = {}) {
   if (!text) { toast("Clipboard của PC đang trống (chỉ hỗ trợ văn bản)"); return; }
-  send({ t: "text", d, s: text, f: opt.force, one: opt.one });
+  const grouped = !opt.one && state.syncOn && (!d || state.devices.some(dev => dev.id === d && dev.inSync));
+  const expected = grouped ? syncCount() : 1;
+  const count = await queueText(d, text, opt);
+  if (count === null) toast("Chưa xác nhận lệnh dán");
+  else if (!count) toast("Chưa xếp được lệnh dán cho máy nào");
+  else if (count < expected) toast(`Đã xếp lệnh dán cho ${count}/${expected} máy`);
 }
 async function pasteFromPC(d: string, opt: { force?: boolean; one?: boolean } = {}) {
   try {
@@ -1511,31 +1546,29 @@ async function copyFromPhones() {
 }
 
 // ---------------------------------------------------------------- screenshots
-async function shoot(list: Tile[]) {
-  const live = list.filter((t) => t.canvas() && t.host.classList.contains("live") && (t.rfb instanceof H264View ? t.rfb.gotFrame : t.rfb));
-  if (!live.length) { toast("Máy chưa có hình để chụp"); return; }
-  let saved = 0, last = "";
-  await Promise.all(live.map(async (t) => {
-    const c = t.canvas();
-    if (!c) return;
-    const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/png"));
-    if (!blob) return;
-    const ac = new AbortController();
-    const timer = window.setTimeout(() => ac.abort(), 5000);
-    try {
-      const res = await fetch(`/api/shot?d=${encodeURIComponent(t.dev.id)}`, { method: "POST", body: blob, signal: ac.signal });
-      if (res.ok) { saved++; last = (await res.json()).path || ""; }
-    } catch { /* ignore */ }
-    finally { clearTimeout(timer); }
-  }));
-  toast(saved ? (saved === 1 ? `Đã lưu ảnh: ${last}` : `Đã lưu ${saved} ảnh vào thư mục screenshots`) : "Không lưu được ảnh chụp");
+async function shoot(t: Tile) {
+  const canvas = t.canvas();
+  if (!canvas || t.dev.screenOff || !t.host.classList.contains("live") || !t.rfb || (t.rfb instanceof H264View && !t.rfb.gotFrame)) {
+    toast("Máy chưa có hình để chụp"); return;
+  }
+  try {
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error();
+    const response = await fetch(`/api/shot?d=${encodeURIComponent(t.dev.id)}`, { method: "POST", body: blob });
+    if (!response.ok) throw new Error();
+    toast(`Đã sao chép ảnh máy ${pad(t.dev.no)} · Ctrl+V để dán`);
+  } catch { toast("Không sao chép được ảnh vào clipboard"); }
 }
 
 // ---------------------------------------------------------------- control panel
 // Group actions: sync on → whole group (d = ""), off → main / last phone.
+function panelPhone() {
+  const active = tiles.get(activeId);
+  return fullTile?.dev.id || (active && !active.dev.parked ? activeId : "") || masterId();
+}
 function groupTarget(): string | null {
   if (state.syncOn) return "";
-  const d = fullTile?.dev.id || activeId || masterId();
+  const d = panelPhone();
   if (!d) { toast("Chọn (chạm) một máy trước, hoặc bật Đồng bộ"); return null; }
   return d;
 }
@@ -1550,17 +1583,10 @@ function toggleSync() { state.syncOn = !state.syncOn; send({ t: "sync", on: stat
 
 // Control panel buttons, in blocks: group (who gets the input) · controls
 // (what to do) · view (how it is shown, rendered next to the sliders).
-type Btn = { k: string; g: "group" | "ctl" | "view"; label: string; icon?: string; sw?: () => boolean; cls?: string; title: string };
+type Btn = { k: string; g: "group" | "ctl" | "view"; label: string; icon?: IconName; sw?: () => boolean; cls?: string; title: string };
 const BTNS: Btn[] = [
   { k: "sync", g: "group", label: "Đồng bộ thao tác", sw: () => state.syncOn, cls: "sync", title: "Bật/tắt đồng bộ thao tác cho các máy đang chọn (F4)" },
-  { k: "all", g: "group", label: "Chọn hết", icon: "all", title: "Đưa tất cả máy vào nhóm đồng bộ (Ctrl+A)" },
-  { k: "none", g: "group", label: "Bỏ chọn", icon: "none", title: "Bỏ tất cả khỏi nhóm" },
-  { k: "power", g: "ctl", label: "Khoá", icon: "power", title: "Khoá / mở màn hình" },
-  { k: "voldown", g: "ctl", label: "Vol −", icon: "voldown", title: "Giảm âm lượng" },
-  { k: "volup", g: "ctl", label: "Vol +", icon: "volup", title: "Tăng âm lượng" },
-  { k: "paste", g: "ctl", label: "Dán", icon: "paste", title: "Gõ nội dung clipboard của PC vào máy (hoặc trỏ chuột vào iPhone rồi Ctrl+V)" },
-  { k: "clear", g: "ctl", label: "Xoá ô", icon: "clear", title: "Xoá sạch ô nhập đang có con trỏ (Ctrl+Backspace)" },
-  { k: "shot", g: "ctl", label: "Chụp", icon: "shot", title: "Chụp màn hình các máy đang chọn" },
+  { k: "power", g: "ctl", label: "Khoá / mở", icon: "power", title: "Khoá máy · Nhấn lần nữa để đánh thức bằng Home" },
   { k: "zoom", g: "view", label: "Nhấp màn nhỏ = phóng to", sw: () => prefs.zoomTap, title: "Bật: nhấp màn nhỏ mở máy đó ở màn lớn, chuột phải đóng, lăn chuột cuộn lưới. Tắt: nhấp / vuốt điều khiển máy (Ctrl+S)" },
   { k: "stats", g: "view", label: "FPS", sw: () => prefs.stats, title: "Hiện fps / băng thông / độ trễ trên từng máy" },
 ];
@@ -1569,13 +1595,28 @@ function renderButtons() {
   const el = $("#btns");
   if (!el.children.length) {
     const grp = (g: Btn["g"]) => BTNS.filter((b) => b.g === g).map(btnHTML).join("");
-    el.innerHTML = `<div class="blk"><div class="blk-h">Nhóm máy <span id="selinfo" class="blk-n"></span></div>` +
-      `<div class="btns one">${btnHTML(BTNS[0])}</div><div class="btns two">${BTNS.filter((b) => b.g === "group").slice(1).map(btnHTML).join("")}</div></div>` +
-      `<div class="blk"><div class="blk-h">Điều khiển <span id="ctlScope" class="blk-n"></span></div><div class="btns">${grp("ctl")}</div></div>`;
-    $("#viewBtns").innerHTML = `<div class="rows">${grp("view")}</div>`;
+    el.innerHTML = `<div class="blk"><div class="blk-h group-head"><label><input id="selectGroup" type="checkbox"> Chọn tất cả</label><span id="selinfo" class="blk-n"></span></div>
+      <div class="btns one">${grp("group")}</div></div>
+      <div class="blk"><div class="blk-h">Điều khiển <span id="ctlScope" class="blk-n"></span></div><div class="btns one">${grp("ctl")}</div></div>`;
+    const box = $<HTMLInputElement>("#selectGroup");
+    box.onchange = () => toggleSel(selectablePhones().map((d) => d.id), box.checked);
+    $("#viewBtns").innerHTML = btnHTML(BTNS.find((b) => b.k === "zoom")!);
+    $("#videoStats").innerHTML = btnHTML(BTNS.find((b) => b.k === "stats")!);
   }
+  const box = $<HTMLInputElement>("#selectGroup");
+  const phones = selectablePhones();
+  const count = phones.filter((d) => d.inSync).length;
+  box.disabled = !phones.length;
+  box.checked = count > 0 && count === phones.length;
+  box.indeterminate = count > 0 && !box.checked;
   for (const b of BTNS) if (b.sw) document.querySelector(`[data-b="${b.k}"]`)!.setAttribute("aria-pressed", String(b.sw()));
-  $("#ctlScope").textContent = state.syncOn ? `· ${syncCount()} máy` : "· máy đang dùng";
+  renderControlScope();
+}
+function renderControlScope() {
+  const label = document.getElementById("ctlScope");
+  if (!label) return;
+  const phone = tiles.get(panelPhone());
+  label.textContent = state.syncOn ? `Nhóm · ${syncCount()} máy` : phone ? `Máy ${pad(phone.dev.no)}` : "Chưa chọn máy";
 }
 function onBtn(e: MouseEvent) {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-b]");
@@ -1583,25 +1624,17 @@ function onBtn(e: MouseEvent) {
   const k = b.dataset.b!;
   switch (k) {
     case "sync": toggleSync(); return;
-    case "all": selectAllPhones(); return;
-    case "none": toggleSel(state.devices.map((d) => d.id), false); return;
     case "zoom": toggleZoomTap(); return;
     case "stats":
       prefs.stats = !prefs.stats; lsSet("iosview.stats", prefs.stats ? "1" : "0");
       renderButtons(); $("#netTotal").hidden = !prefs.stats; return;
-    case "shot": {
-      const sel = [...tiles.values()].filter((t) => t.dev.inSync && t.dev.status === "online");
-      shoot(sel.length ? sel : [masterTile()!].filter(Boolean));
-      return;
-    }
   }
-  const d = k === "paste" && e.altKey ? keyTarget() || groupTarget() : groupTarget();
-  if (d === null || (k === "paste" && e.altKey && !d)) return;
-  if (k === "paste") pasteFromPC(d, { one: e.altKey });
-  else send({ t: "btn", d, b: k });
+  const d = groupTarget();
+  if (d !== null && k === "power") send({ t: "btn", d, b: k });
 }
 onPress($("#btns"), onBtn);
 onPress($("#viewBtns"), onBtn);
+onPress($("#videoStats"), onBtn);
 $("#textForm").onsubmit = async (e) => {
   e.preventDefault();
   const inp = $<HTMLInputElement>("#textInput");
@@ -1765,16 +1798,28 @@ function fillSettings() {
   $<HTMLInputElement>("#setH264").checked = state.h264;
   $<HTMLInputElement>("#setStrip").checked = state.stripAccents;
 }
-$("#setForm").onsubmit = (e) => {
-  e.preventDefault();
-  const h264 = $<HTMLInputElement>("#setH264").checked;
-  if (h264 !== state.h264) send({ t: "h264", on: h264 });
-  sendSettings({
-    pw: $<HTMLInputElement>("#setPw").value,
-    port: +$<HTMLInputElement>("#setPort").value || state.vncPort,
-    strip: $<HTMLInputElement>("#setStrip").checked,
-  });
-  toast("Đã lưu cài đặt");
+$("#setForm").onsubmit = (event) => {
+  event.preventDefault();
+};
+$("#setForm").onkeydown = (event) => {
+  if (event.key === "Enter" && event.target instanceof HTMLInputElement && !event.isComposing) {
+    event.preventDefault();
+    event.target.blur();
+  }
+};
+$("#setForm").onchange = (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement)) return;
+  switch (input.id) {
+    case "setH264": send({ t: "h264", on: input.checked }); return;
+    case "setPort":
+      if (!input.reportValidity()) return;
+      state.vncPort = input.valueAsNumber; break;
+    case "setPw": state.password = input.value; break;
+    case "setStrip": state.stripAccents = input.checked; break;
+    default: return;
+  }
+  sendSettings();
 };
 
 // collapse + theme
@@ -1819,27 +1864,57 @@ document.addEventListener("visibilitychange", () => {
 // Full list: docs/SHORTCUTS.md. The boxed ones can be changed by the user
 // (Cài đặt → Phím tắt…) and are stored with the phrases and notes in
 // iosview.json ("ui" key) through /api/ui.
-type Act = "force" | "paste" | "phrases" | "settings" | "notes" | "notesClose";
+type Act = "home" | "back" | "switcher" | "large" | "park" | "all" | "sync" | "rename" | "reload" | "zoomTap" | "previous" | "next" | "copy" | "cut" | "undo" | "redo" | "clear" | `app:${string}` | "phoneSettings" | "cc" | "force" | "paste" | "phrases" | "settings" | "shortcuts" | "notes" | "notesClose";
 const ACTS: { a: Act; label: string; def: string }[] = [
+  { a: "large", label: "Mở màn hình lớn", def: "Ctrl+Shift+MouseRight" },
+  { a: "park", label: "Tạm bỏ / đưa máy trở lại", def: "Ctrl+Alt+Shift+MouseRight" },
+  { a: "all", label: "Chọn tất cả máy", def: "Ctrl+A" },
+  { a: "sync", label: "Bật / tắt đồng bộ", def: "F4" },
+  { a: "rename", label: "Đổi tên máy", def: "F2" },
+  { a: "reload", label: "Tải lại cửa sổ", def: "F5" },
+  { a: "zoomTap", label: "Đổi cách nhấp màn nhỏ", def: "Ctrl+S" },
+  { a: "previous", label: "Máy trước", def: "Ctrl+ArrowLeft" },
+  { a: "next", label: "Máy sau", def: "Ctrl+ArrowRight" },
+  { a: "copy", label: "Sao chép từ iPhone", def: "Ctrl+C" },
+  { a: "cut", label: "Cắt", def: "Ctrl+X" },
+  { a: "undo", label: "Hoàn tác", def: "Ctrl+Z" },
+  { a: "redo", label: "Làm lại", def: "Ctrl+Y" },
+  { a: "clear", label: "Xoá nội dung ô nhập", def: "Ctrl+Backspace" },
   { a: "force", label: "Dán cưỡng bức", def: "Ctrl+D" },
   { a: "paste", label: "Dán văn bản", def: "Ctrl+V" },
   { a: "phrases", label: "Cụm từ nhanh", def: "Ctrl+K" },
-  { a: "settings", label: "Mở cài đặt", def: "Ctrl+," },
-  { a: "notes", label: "Mở ghi chú", def: "Ctrl+R" },
+  { a: "settings", label: "Mở cài đặt iOSView", def: "Ctrl+," },
+  { a: "shortcuts", label: "Mở bảng phím tắt", def: "Ctrl+Shift+T" },
+  { a: "notes", label: "Mở / đóng ghi chú", def: "Ctrl+R" },
   { a: "notesClose", label: "Đóng ghi chú", def: "Ctrl+Q" },
 ];
-const defaultKeys = () => Object.fromEntries(ACTS.map((x) => [x.a, x.def])) as Record<Act, string>;
+const phoneKeys: typeof ACTS = [
+  { a: "home", label: "Về màn hình chính", def: "Ctrl+MouseRight" },
+  { a: "back", label: "Quay lại", def: "Escape" },
+  { a: "switcher", label: "Đa nhiệm", def: "" },
+  { a: "phoneSettings", label: "Mở Cài đặt iPhone", def: "Ctrl+Shift+S" },
+  { a: "cc", label: "Mở Trung tâm điều khiển", def: "Ctrl+Shift+Space" },
+];
+type PhoneApp = { id: string; name: string };
+const bundlePattern = /^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/;
+function actions() {
+  return [...ACTS, ...phoneKeys, ...(ui.apps || []).map((app) => ({
+    a: ("app:" + app.id) as Act, label: app.name, def: "",
+  }))];
+}
+const defaultKeys = () => Object.fromEntries([...ACTS, ...phoneKeys].map((x) => [x.a, x.def])) as Record<Act, string>;
 let keys = defaultKeys();
 // Fixed shortcuts a custom one may not take.
-const RESERVED = new Set(["Ctrl+A", "Ctrl+C", "Ctrl+X", "Ctrl+Z", "Ctrl+Y", "Ctrl+Backspace", "Ctrl+Delete",
-  "Ctrl+ArrowLeft", "Ctrl+ArrowRight", "Ctrl+ArrowUp", "Ctrl+ArrowDown", "Ctrl+=", "Ctrl+-", "Ctrl+0",
-  "Ctrl+S", "F2", "F4", "F5", "F11", "F12", "Escape", "Alt+F4"]);
+const RESERVED = new Set(["Alt+F4"]);
 
 const CODE_KEYS: Record<string, string> = {
   Comma: ",", Period: ".", Slash: "/", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]",
   Backslash: "\\", Backquote: "`", Minus: "-", Equal: "=", Space: "Space",
 };
 // "Ctrl+Shift+K" style name of a key press, layout-independent for letters/digits.
+function mouseCombo(e: MouseEvent) {
+  return [e.ctrlKey || e.metaKey ? "Ctrl" : "", e.altKey ? "Alt" : "", e.shiftKey ? "Shift" : "", "MouseRight"].filter(Boolean).join("+");
+}
 function comboOf(e: KeyboardEvent) {
   let k = e.key;
   if (/^Key[A-Z]$/.test(e.code)) k = e.code.slice(3);
@@ -1852,24 +1927,55 @@ function comboOf(e: KeyboardEvent) {
   if (e.shiftKey) m.push("Shift");
   return [...m, k].join("+");
 }
-const fmtKey = (c: string) => c.split("+").join(" + ").replace("Arrow", "");
+const fmtKey = (c: string) => c.split("+").join(" + ").replace("Arrow", "").replace("MouseRight", "Chuột phải");
 function actOf(combo: string): Act | null {
-  for (const x of ACTS) if (keys[x.a] === combo) return x.a;
+  if (!combo) return null;
+  for (const x of actions()) if (keys[x.a] === combo) return x.a;
   return null;
 }
 function validKey(combo: string, act: Act): string {
   const parts = combo.split("+");
   const key = parts[parts.length - 1];
-  if (!/^F\d{1,2}$/.test(key) && !parts.includes("Ctrl") && !parts.includes("Alt")) return "Phím tắt phải có Ctrl hoặc Alt (hoặc là phím F1–F12)";
+  if (key !== "Escape" && key !== "MouseRight" && !/^F\d{1,2}$/.test(key) && !parts.includes("Ctrl") && !parts.includes("Alt")) return "Phím tắt phải có Ctrl hoặc Alt (hoặc là phím F1–F12)";
   if (RESERVED.has(combo)) return `${fmtKey(combo)} đang là phím cố định`;
-  const other = ACTS.find((x) => x.a !== act && keys[x.a] === combo);
-  if (other) return `${fmtKey(combo)} đang dùng cho “${other.label}”`;
+  if (key === "MouseRight" && (parts.length === 1 || !mouseAct(act))) return "Tổ hợp chuột phải này không dùng được";
   return "";
 }
 
 function runAct(act: Act, e: KeyboardEvent) {
   const one = e.altKey && !keys[act].includes("Alt");
+  if (act === "cc" || act === "phoneSettings" || act.startsWith("app:")) {
+    const d = keyTarget();
+    if (!d) { toast("Chọn iPhone trước"); return; }
+    send({ t: "phoneAction", d, b: act === "cc" ? "cc" : "open", s: act === "phoneSettings" ? "com.apple.Preferences" : act.slice(4), one });
+    return;
+  }
   switch (act) {
+    case "home":
+    case "back":
+    case "switcher": {
+      const tile = tiles.get(keyTarget());
+      if (tile) navPress(tile, act, one);
+      return;
+    }
+    case "large": openBig(keyTarget()); return;
+    case "park": {
+      const tile = tiles.get(hoverId || keyTarget());
+      if (tile) togglePark(tile, true);
+      return;
+    }
+    case "all": selectAllPhones(); return;
+    case "sync": toggleSync(); return;
+    case "rename": if (keyTarget()) renameDevice(keyTarget()); return;
+    case "reload": location.reload(); return;
+    case "zoomTap": toggleZoomTap(); return;
+    case "previous": switchBig(-1); return;
+    case "next": switchBig(1); return;
+    case "copy": void copyFromPhones(); return;
+    case "cut": case "undo": case "redo":
+      if (keyTarget()) sendCommand(keyTarget(), {cut:"x", undo:"z", redo:"y"}[act]); return;
+    case "clear":
+      if (keyTarget()) send({t:"btn", d:keyTarget(), b:"clear", one}); return;
     case "force":
     case "paste": {
       const d = keyTarget();
@@ -1880,7 +1986,7 @@ function runAct(act: Act, e: KeyboardEvent) {
     }
     case "phrases": openPhrases(); return;
     case "settings": openSettings(); return;
-    case "notes": openNotes(); return;
+    case "notes": if (notesOpen()) closeNotes(); else openNotes(); return;
     case "notesClose": closeNotes(); return;
   }
 }
@@ -1890,6 +1996,7 @@ function setSolo(on: boolean) {
   if (document.body.classList.contains("solo") === on) return;
   document.body.classList.toggle("solo", on);
   $("#soloChip").hidden = !on;
+  renderControlScope();
 }
 
 
@@ -1898,14 +2005,17 @@ function openSettings() {
   $('[data-tab="set"]').click();
 }
 
+function selectablePhones() { return state.devices.filter((d) => !d.parked); }
+
 function selectAllPhones() {
-  toggleSel(state.devices.map((d) => d.id), true);
-  toast(`Đã chọn tất cả ${state.devices.length} máy`);
+  const phones = selectablePhones();
+  toggleSel(phones.map((d) => d.id), true);
+  toast(`Đã chọn ${phones.length} máy`);
 }
 
 // Phones in grid order, as shown (filter applied).
 function visibleOrder(): Tile[] {
-  return [...tiles.values()].filter((t) => !t.el.hidden).sort((a, b) => +a.el.style.order - +b.el.style.order);
+  return [...tiles.values()].filter((t) => !t.el.hidden && !t.dev.parked).sort((a, b) => +a.el.style.order - +b.el.style.order);
 }
 // Ctrl + arrows: big screen (or full view) to the previous / next phone.
 function switchBig(dir: number) {
@@ -1941,28 +2051,42 @@ grid.addEventListener("pointerdown", (e) => {
   const tg = e.target as HTMLElement;
   if (tg.closest("input, button")) return;
   const t = tileOf(tg);
+  if (t?.dev.parked) return;
   if (e.shiftKey && t && !e.ctrlKey && !e.metaKey) {
     e.preventDefault(); e.stopPropagation(); swallowClick = true;
     rangeSelect(t);
     return;
   }
-  if ((e.ctrlKey || e.metaKey) && !onGridScrollbar(e)) {
+  const additive = e.ctrlKey || e.metaKey;
+  if ((additive || tg === grid) && !onGridScrollbar(e)) {
     e.preventDefault(); e.stopPropagation(); swallowClick = true;
-    boxSelect(e, t);
+    boxSelect(e, t, additive);
     return;
   }
-  if (tg === grid && !onGridScrollbar(e)) {
-    const x0 = e.clientX, y0 = e.clientY;
-    window.addEventListener("pointerup", (u) => {
-      if (Math.hypot(u.clientX - x0, u.clientY - y0) > 5) return;
-      const sel = state.devices.filter((d) => d.inSync);
-      if (!sel.length) return;
-      toggleSel(sel.map((d) => d.id), false);
-      toast(`Đã bỏ chọn ${sel.length} máy`);
-    }, { once: true });
-  }
 }, true);
-grid.addEventListener("contextmenu", (e) => { if (e.target === grid) e.preventDefault(); });
+grid.addEventListener("contextmenu", (e) => {
+  if (e.target === grid) e.preventDefault();
+}, true);
+function phoneMouseAction(e: MouseEvent) {
+  const act = actOf(mouseCombo(e));
+  const target = e.target as Element;
+  const tile = tileOf(target) ?? (target.closest("#stageScreen .host") ? masterTile() : null);
+  return act && mouseAct(act) && tile ? { act, tile } : null;
+}
+function mouseAct(act: Act) { return act === "large" || act === "home" || act === "park"; }
+window.addEventListener("pointerdown", (e) => {
+  if (e.button !== 2 || document.querySelector("dialog[open]")) return;
+  const action = phoneMouseAction(e);
+  if (!action) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (action.act === "park") togglePark(action.tile, true);
+  else if (action.act === "large") openBig(action.tile.dev.id);
+  else navPress(action.tile, "home");
+}, true);
+window.addEventListener("contextmenu", (e) => {
+  if (document.querySelector("dialog[open]") || !phoneMouseAction(e)) return;
+  e.preventDefault(); e.stopPropagation();
+}, true);
 // Right click outside the big screen (empty grid, window background, around
 // the big screen) closes it — on press, no context menu.
 function outsideBig(tg: HTMLElement) {
@@ -1988,11 +2112,13 @@ function rangeSelect(t: Tile) {
   toast(`Đã chọn ${ids.length} máy (${pad(list[lo].dev.no)} → ${pad(list[hi].dev.no)})`);
 }
 
-function boxSelect(e: PointerEvent, t0?: Tile) {
+function boxSelect(e: PointerEvent, t0: Tile | undefined, additive: boolean) {
   const x0 = e.clientX, y0 = e.clientY;
+  grid.setPointerCapture(e.pointerId);
   let box: HTMLElement | null = null;
   let hit: Tile[] = [];
   const move = (ev: PointerEvent) => {
+    if (ev.pointerId !== e.pointerId) return;
     const x1 = ev.clientX, y1 = ev.clientY;
     if (!box) {
       if (Math.hypot(x1 - x0, y1 - y0) < 6) return;
@@ -2002,27 +2128,39 @@ function boxSelect(e: PointerEvent, t0?: Tile) {
     }
     const l = Math.min(x0, x1), tp = Math.min(y0, y1), w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
     Object.assign(box.style, { left: l + "px", top: tp + "px", width: w + "px", height: h + "px" });
+    const viewport = grid.getBoundingClientRect();
     hit = visibleOrder().filter((x) => {
       const r = x.el.getBoundingClientRect();
-      return r.right > l && r.left < l + w && r.bottom > tp && r.top < tp + h;
+      return Math.min(r.right, viewport.left + grid.clientWidth) >= Math.max(r.left, viewport.left, l)
+        && Math.max(r.left, viewport.left) <= l + w
+        && Math.min(r.bottom, viewport.top + grid.clientHeight) >= Math.max(r.top, viewport.top, tp)
+        && Math.max(r.top, viewport.top) <= tp + h;
     });
     for (const x of tiles.values()) x.el.classList.toggle("marq", hit.includes(x));
   };
-  const end = () => {
+  const end = (ev: PointerEvent) => {
+    if (ev.pointerId !== e.pointerId) return;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", end);
     window.removeEventListener("pointercancel", end);
+    grid.removeEventListener("lostpointercapture", end);
+    if (ev.type === "pointerup") move(ev);
     for (const x of tiles.values()) x.el.classList.remove("marq");
-    if (!box) {                         // Ctrl + click / press-and-hold: toggle this phone
+    box?.remove();
+    if (ev.type !== "pointerup") return;
+    if (!box && additive) {
       if (t0) { selAnchor = t0.dev.id; toggleSel([t0.dev.id]); }
       return;
     }
-    box.remove();
-    if (hit.length) { toggleSel(hit.map((x) => x.dev.id), true); toast(`Đã chọn ${hit.length} máy trong khung`); }
+    const ids = new Set(hit.map((x) => x.dev.id));
+    if (!additive) toggleSel(state.devices.filter((d) => d.inSync && !ids.has(d.id)).map((d) => d.id), false);
+    toggleSel(hit.filter((t) => !t.dev.inSync).map((t) => t.dev.id), true);
+    if (hit.length) selAnchor = hit[0].dev.id;
   };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", end);
   window.addEventListener("pointercancel", end);
+  grid.addEventListener("lostpointercapture", end);
 }
 
 // Mouse wheel over a slider moves it (size and quality) — but only when the
@@ -2054,7 +2192,8 @@ document.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((r) =
 });
 
 // ---------------------------------------------------------------- UI data (keys, phrases, notes)
-type UIData = { keys?: Partial<Record<Act, string>>; phrases?: string[]; notes?: string; video?: Video };
+type UIData = { apps?: PhoneApp[]; keys?: Record<string, string>; phrases?: string[]; notes?: string; video?: Video };
+const legacyAliases: Partial<Record<Act, string>> = { home: "homeMouse", previous: "previousUp", next: "nextDown", clear: "clearAlt" };
 let ui: UIData = {};
 let uiTimer = 0;
 function putUI(keepalive = false) {
@@ -2066,15 +2205,39 @@ function putUI(keepalive = false) {
 function saveUI() { clearTimeout(uiTimer); uiTimer = window.setTimeout(() => putUI(), 500); }
 window.addEventListener("pagehide", () => { if (uiTimer) putUI(true); });
 function applyKeys() {
-  keys = defaultKeys();
-  for (const x of ACTS) {
-    const k = ui.keys?.[x.a];
-    if (k && k !== keys[x.a] && !validKey(k, x.a)) keys[x.a] = k;
+  const seenApps = new Set(["com.apple.Preferences"]);
+  ui.apps = Array.isArray(ui.apps) ? ui.apps.filter((a) => {
+    if (!a || typeof a.name !== "string" || typeof a.id !== "string" || !bundlePattern.test(a.id) || seenApps.has(a.id)) return false;
+    seenApps.add(a.id);
+    return true;
+  }) : [];
+  const list = actions();
+  const stored = ui.keys || {};
+  keys = Object.fromEntries(list.map(({a}) => [a, ""])) as Record<Act, string>;
+  const explicit = new Set<Act>();
+  const used = new Set<string>();
+  for (const {a} of list) {
+    const alias = legacyAliases[a];
+    let k = stored[a] ?? (alias ? stored[alias] || undefined : undefined);
+    if (typeof k !== "string") continue;
+    const parts = k.split("+");
+    k = [...["Ctrl", "Alt", "Shift"].filter((mod) => parts.slice(0, -1).includes(mod)), parts.at(-1)].join("+");
+    if (a === "large" && k === "Ctrl+MouseRight" && stored.home === undefined && stored.homeMouse === undefined) continue;
+    if (k && validKey(k, a)) continue;
+    explicit.add(a);
+    if (k && !used.has(k)) { keys[a] = k; used.add(k); }
+  }
+  for (const {a, def} of list) {
+    if (explicit.has(a) || !def || used.has(def)) continue;
+    keys[a] = def;
+    used.add(def);
   }
 }
 fetch("/api/ui", { cache: "no-store" }).then((r) => r.json()).then((v: UIData) => {
   ui = v && typeof v === "object" ? v : {};
+  const previousApps = JSON.stringify(ui.apps || []);
   applyKeys();
+  if (JSON.stringify(ui.keys || {}) !== JSON.stringify(keyOverrides()) || previousApps !== JSON.stringify(ui.apps)) persistKeys();
   fillVideo(); retuneAll();
   const ta = $<HTMLTextAreaElement>("#notesText");
   if (!ta.value) ta.value = ui.notes || "";
@@ -2151,56 +2314,92 @@ $("#phClose").onclick = () => $<HTMLDialogElement>("#phrases").close();
 // ---------------------------------------------------------------- shortcut list / editor
 const FIXED: [string, [string, string, string?][]][] = [
   ["Chung", [
-    ["Chọn tất cả điện thoại", "Ctrl + A"],
     ["Chọn liên tục điện thoại", "Shift + nhấp chuột trái"],
     ["Hủy chọn điện thoại đã chọn", "Nhấp chuột trái vào chỗ trống"],
     ["Điều chỉnh kích thước màn hình nhỏ", "Ctrl + cuộn chuột"],
     ["Điều chỉnh kích thước và chất lượng hình", "Rê chuột lên thanh trượt + cuộn chuột"],
     ["Điều khiển riêng lẻ từng điện thoại", "Giữ Alt"],
-    ["Điều khiển bằng hai ngón tay", "Shift", "chưa hỗ trợ"],
-    ["Chuyển đổi nhanh màn hình lớn", "Ctrl + phím mũi tên"],
-    ["Mở màn hình lớn", "Nút ⤢ trên ô máy / nhấp đúp thanh tên"],
     ["Đóng màn hình lớn", "Nhấp chuột phải ra ngoài màn lớn"],
   ]],
-  ["Chế độ điều khiển màn hình lớn", [
-    ["Mở đa nhiệm của điện thoại", "Nhấn và giữ chuột phải"],
-    ["Quay về trang chủ điện thoại", "Nhấp chuột giữa"],
-    ["Quay lại cấp trên của điện thoại", "Nhấp chuột phải"],
-    ["Quay lại cấp trên của điện thoại", "Esc"],
+  ["Thao tác trên iPhone", [
+    ["Về màn hình chính", "Nhấp chuột giữa"],
+    ["Mở đa nhiệm", "Giữ chuột phải"],
+    ["Quay lại", "Nhấp chuột phải"],
+    ["Chọn vùng", "Kéo từ chỗ trống · giữ Ctrl để chọn thêm"],
   ]],
-  ["Chế độ điều khiển màn hình nhỏ", [
-    ["Bật / tắt: nhấp màn nhỏ = phóng to", "Ctrl + S"],
-    ["Chọn điện thoại", "Ctrl + nhấn chuột trái"],
-    ["Chọn khung điện thoại", "Ctrl + kéo chuột trái"],
-    ["Mở đa nhiệm của điện thoại", "Nhấn và giữ chuột phải"],
-    ["Quay về trang chủ điện thoại", "Nhấp chuột giữa"],
-    ["Quay lại cấp trên của điện thoại", "Esc"],
-  ]],
-  ["Riêng iOSView", [
-    ["Đổi tên máy đang trỏ", "F2"],
-    ["Bật / tắt đồng bộ", "F4"],
-    ["Xoá nội dung ô nhập trên iPhone", "Ctrl + Backspace"],
-    ["Hoàn tác / làm lại trên iPhone", "Ctrl + Z / Ctrl + Y"],
-    ["Tải lại cửa sổ", "F5"],
-  ]],
+
 ];
+function keyOverrides() {
+  return Object.fromEntries(actions().filter((x) => keys[x.a] !== x.def).map((x) => [x.a, keys[x.a] || ""]));
+}
+function persistKeys() {
+  ui.keys = keyOverrides();
+  saveUI();
+}
+let appRequest = 0;
+const appPicker = $<HTMLSelectElement>("#appPicker");
+let shortcutApps: PhoneApp[] = [];
+function renderAppPicker(label = "Thêm ứng dụng…") {
+  appPicker.replaceChildren(new Option(label, ""));
+  for (const app of shortcutApps) {
+    if (!ui.apps?.some((a) => a.id === app.id)) appPicker.add(new Option(app.name, app.id));
+  }
+  appPicker.disabled = appPicker.options.length === 1;
+}
+appPicker.onchange = () => {
+  const app = shortcutApps.find((a) => a.id === appPicker.value);
+  if (!app || ui.apps?.some((a) => a.id === app.id)) return;
+  (ui.apps ||= []).push(app);
+  capturing = `app:${app.id}`; keys[capturing] = "";
+  saveUI(); renderKeys(); renderAppPicker();
+  $("#phoneKeyRows .kcap.on").scrollIntoView({ block: "nearest" });
+};
+function loadApps() {
+  shortcutApps = [];
+  const target = tiles.get(keyTarget());
+  const id = target?.dev.status === "online" ? target.dev.id : state.devices.find((d) => d.status === "online")?.id;
+  const seq = ++appRequest;
+  renderAppPicker(id ? "Đang tải ứng dụng…" : "Kết nối iPhone để thêm ứng dụng");
+  if (!id) return;
+  send({t:"phoneAction", b:"apps", d:id, one:true, seq});
+  window.setTimeout(() => receiveApps(seq, [], "Chưa nhận được danh sách ứng dụng. Hãy thử lại."), 6000);
+}
+function receiveApps(seq: number, list: PhoneApp[] | null, error: string) {
+  if (seq !== appRequest) return;
+  appRequest++;
+  shortcutApps = error ? [] : (list || [])
+    .filter((app) => bundlePattern.test(app.id) && app.id !== "com.apple.Preferences")
+    .sort((a, b) => a.name.localeCompare(b.name, "vi"));
+  renderAppPicker(error || (shortcutApps.length ? "Thêm ứng dụng…" : "Không có ứng dụng để thêm"));
+}
 let capturing: Act | null = null;
 function renderKeys() {
+  const scroll = $("#keysBody").scrollTop;
   const row = (label: string, key: string, note?: string) =>
     `<li><span>${esc(label)}${note ? ` <em>${esc(note)}</em>` : ""}</span><span class="k">${esc(key)}</span></li>`;
-  let h = "";
-  FIXED.forEach(([title, rows], i) => {
-    h += `<h3>${esc(title)}</h3><ul>` + rows.map((r) => row(...r)).join("");
-    if (i === 0) {
-      h += ACTS.map((x) => `<li><span>${esc(x.label)}</span><button class="kcap${capturing === x.a ? " on" : ""}" data-act="${x.a}">${capturing === x.a ? "Nhấn tổ hợp phím… (Esc huỷ)" : esc(fmtKey(keys[x.a]))}</button></li>`).join("");
-    }
-    h += "</ul>";
-  });
-  $("#keysBody").innerHTML = h;
+  const editRow = (x: typeof ACTS[number]) => {
+    const recording = capturing === x.a;
+    return `<li><span title="${esc(x.label)}">${esc(x.label)}</span><button title="${recording ? "Esc để hủy · Delete để bỏ gán" : esc(fmtKey(keys[x.a] || ""))}" class="kcap${recording ? " on" : ""}" data-act="${esc(x.a)}">${recording ? "Nhấn phím mới…" : esc(fmtKey(keys[x.a] || "")) || "Gán phím"}</button>${x.a.startsWith("app:") ? `<button class="key-remove" title="Gỡ khỏi danh sách phím tắt" data-remove="${esc(x.a)}" aria-label="Gỡ ${esc(x.label)} khỏi danh sách phím tắt">${ico("trash")}</button>` : ""}</li>`;
+  };
+  $("#phoneKeyRows").innerHTML = actions().slice(ACTS.length).map(editRow).join("");
+  let h = "<h3>iOSView</h3><ul>" + ACTS.map(editRow).join("") + "</ul>";
+  h += "<details><summary>Thao tác chuột và phím hệ thống</summary>" +
+    FIXED.map(([title, rows]) => `<h3>${esc(title)}</h3><ul>${rows.map((r) => row(...r)).join("")}</ul>`).join("") + "</details>";
+  $<HTMLButtonElement>("#keysReset").disabled = !actions().some((x) => keys[x.a] !== x.def);
+  $("#localKeyRows").innerHTML = h;
+  $("#keysBody").scrollTop = scroll;
 }
-function openKeys() { capturing = null; renderKeys(); $<HTMLDialogElement>("#keysDlg").showModal(); }
+function openKeys() { capturing = null; renderKeys(); $<HTMLDialogElement>("#keysDlg").showModal(); loadApps(); }
 $("#keysBody").addEventListener("click", (e) => {
-  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-act]");
+  const el = e.target as HTMLElement;
+  const remove = el.closest<HTMLElement>("[data-remove]")?.dataset.remove;
+  if (remove) {
+    ui.apps = ui.apps?.filter((a) => "app:" + a.id !== remove);
+    delete keys[remove as Act]; capturing = null; persistKeys(); renderKeys();
+    if (shortcutApps.length) renderAppPicker();
+    return;
+  }
+  const b = el.closest<HTMLElement>("[data-act]");
   if (!b) return;
   capturing = capturing === b.dataset.act ? null : b.dataset.act as Act;
   renderKeys();
@@ -2208,27 +2407,45 @@ $("#keysBody").addEventListener("click", (e) => {
 $("#keysReset").onclick = () => {
   capturing = null;
   delete ui.keys;
-  keys = defaultKeys();
+  applyKeys();
   saveUI(); renderKeys(); renderButtons();
   toast("Đã khôi phục phím tắt mặc định");
 };
 $("#keysClose").onclick = () => $<HTMLDialogElement>("#keysDlg").close();
 $("#keysDlg").addEventListener("close", () => { capturing = null; });
 $("#keysBtn").onclick = openKeys;
+for (const dialog of document.querySelectorAll<HTMLDialogElement>("dialog.dlg")) {
+  dialog.addEventListener("click", (event) => {
+    if (event.target !== dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX >= rect.right || event.clientY < rect.top || event.clientY >= rect.bottom) {
+      event.stopPropagation(); dialog.close();
+    }
+  });
+}
+$("#keysDlg").addEventListener("contextmenu", (event) => {
+  if (!capturing || !mouseAct(capturing)) return;
+  event.preventDefault();
+  assignCapturedKey(mouseCombo(event));
+});
+function assignCapturedKey(combo: string) {
+  if (!capturing) return;
+  const error = combo && validKey(combo, capturing);
+  if (error) { toast(error); return; }
+  const previous = actOf(combo);
+  if (previous && previous !== capturing) keys[previous] = "";
+  keys[capturing] = combo;
+  capturing = null;
+  persistKeys(); renderKeys(); renderButtons();
+}
 // Recording a new shortcut: grab the next key press before anything else sees it.
 window.addEventListener("keydown", (e) => {
   if (!capturing) return;
   e.preventDefault(); e.stopImmediatePropagation();
-  if (e.key === "Escape") { capturing = null; renderKeys(); return; }
+  if (e.key === "Escape" && capturing !== "back") { capturing = null; renderKeys(); return; }
   if (["Control", "Shift", "Alt", "Meta", "CapsLock"].includes(e.key)) return;   // wait for the key
-  const combo = comboOf(e);
-  const err = validKey(combo, capturing);
-  if (err) { toast(err); return; }
-  keys[capturing] = combo;
-  ui.keys = Object.fromEntries(ACTS.filter((x) => keys[x.a] !== x.def).map((x) => [x.a, keys[x.a]]));
-  toast(`${ACTS.find((x) => x.a === capturing)!.label}: ${fmtKey(combo)}`);
-  capturing = null;
-  saveUI(); renderKeys(); renderButtons();
+  const combo = e.key === "Delete" && !e.ctrlKey && !e.altKey && !e.shiftKey ? "" : comboOf(e);
+  assignCapturedKey(combo);
 }, true);
 
 // ---------------------------------------------------------------- zoom
@@ -2282,15 +2499,70 @@ function toast(s: string) {
   toastTimer = window.setTimeout(() => (el.hidden = true), 3200);
 }
 
-// ---------------------------------------------------------------- theme (Graphite & Paper / Carbon Dark)
+// ---------------------------------------------------------------- theme (Soft Mint / Carbon Dark)
 const themeBtn = $("#themeBtn");
-let curTheme: "light" | "dark" = lsGet("iosview.theme") === "dark" ? "dark" : "light";
+const THEME_KEY = "iosview.softmint.theme";
+let curTheme: "light" | "dark" = lsGet(THEME_KEY) === "dark" ? "dark" : "light";
+const colorSettings = [
+  { input: "#workspaceColor", options: "#workspaceColors", css: "--workspace-color", defaults: "--bg-canvas",
+    light: ["#F1F5F9", "#F8FAFC", "#FFFFFF"], dark: ["#111827", "#171717", "#132320"] },
+  { input: "#frameBorderColor", options: "#frameBorderColors", css: "--frame-border-color", defaults: "--frame-border-default",
+    light: ["#475569", "#64748B", "#E2E8F0"], dark: ["#A5B4C8", "#63A99A", "#526985"] },
+  { input: "#selectionColor", options: "#selectionColors", css: "--selection-color", defaults: "--selection-default",
+    gradientEnd: "--selection-end",
+    light: ["#2563EB", "#047857", "#4F46E5"], dark: ["#60A5FA", "#4ADE80", "#FBBF24"] },
+] as const;
+const resetColors = $<HTMLButtonElement>("#resetColors");
+// Use the extracted palette on upgrade without deleting older color choices.
+const colorKey = (css: string) => `${curTheme === "light" ? "iosview.softmint.colors" : "iosview.colors.dark"}.${css.slice(2)}`;
+function applyColors() {
+  const root = document.documentElement;
+  const style = getComputedStyle(root);
+  let customized = false;
+  for (const field of colorSettings) {
+    const stored = lsGet(colorKey(field.css)).toLowerCase();
+    const fallback = style.getPropertyValue(field.defaults).trim().toLowerCase();
+    const value = /^#[0-9a-f]{6}$/.test(stored) ? stored : fallback;
+    if (value !== fallback) {
+      root.style.setProperty(field.css, value);
+      customized = true;
+    } else root.style.removeProperty(field.css);
+    $<HTMLInputElement>(field.input).value = value;
+    const options = $(field.options);
+    options.replaceChildren();
+    const end = "gradientEnd" in field ? style.getPropertyValue(field.gradientEnd).trim() : "";
+    for (const color of [fallback, ...field[curTheme]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      const isDefault = color === fallback;
+      button.style.setProperty("--swatch", isDefault && end ? `linear-gradient(160deg, ${color}, ${end})` : color);
+      button.title = isDefault ? (end ? "Chuyển sắc mặc định" : "Màu mặc định") : color;
+      button.setAttribute("aria-label", button.title);
+      button.setAttribute("aria-pressed", String(color.toLowerCase() === value));
+      button.onclick = () => { lsSet(colorKey(field.css), color); applyColors(); };
+      options.append(button);
+    }
+  }
+  resetColors.disabled = !customized;
+}
+for (const field of colorSettings) {
+  const input = $<HTMLInputElement>(field.input);
+  input.oninput = () => {
+    document.documentElement.style.setProperty(field.css, input.value);
+  };
+  input.onchange = () => { lsSet(colorKey(field.css), input.value); applyColors(); };
+}
+resetColors.onclick = () => {
+  for (const field of colorSettings) lsSet(colorKey(field.css), "");
+  applyColors();
+};
 function applyTheme(next: "light" | "dark", save = true) {
   curTheme = next;
   document.documentElement.dataset.theme = next;
-  if (save) lsSet("iosview.theme", next);
+  applyColors();
+  if (save) lsSet(THEME_KEY, next);
   themeBtn.innerHTML = ico(next === "dark" ? "sun" : "moon");
-  themeBtn.title = next === "dark" ? "Chuyển sang Graphite & Paper (sáng)" : "Chuyển sang Carbon Dark (tối)";
+  themeBtn.title = next === "dark" ? "Chuyển sang Soft Mint (sáng)" : "Chuyển sang Carbon Dark (tối)";
   themeBtn.setAttribute("aria-label", themeBtn.title);
 }
 applyTheme(curTheme, false);

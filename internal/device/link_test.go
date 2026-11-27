@@ -123,8 +123,38 @@ func TestNetworkEntryLinksLAN(t *testing.T) {
 	m.AddWifi("10.1.2.3:1")
 	m.onUSB(usbmux.Event{Attached: true, Device: usbmux.Device{DeviceID: 3, SerialNumber: "U2", ConnectionType: "Network", NetAddr: "10.1.2.3"}})
 	// VNCPort is 1 in tests, so the address matches
-	if got := ids(m); len(got) != 1 || got["usb:U2"].Wifi != "10.1.2.3:1" {
+	if got := ids(m); len(got) != 1 || got["usb:U2"].Transport != "wifi" || got["usb:U2"].WifiSync || got["usb:U2"].Wifi != "10.1.2.3:1" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestNetworkAttachmentSurvivesCableDetach(t *testing.T) {
+	m, _ := newTestManager(t)
+	cable := usbmux.Device{DeviceID: 5, SerialNumber: "U3", ConnectionType: "USB"}
+	wireless := usbmux.Device{DeviceID: 9, SerialNumber: "U3", ConnectionType: "Network"}
+	m.onUSB(usbmux.Event{Attached: true, Device: cable})
+	m.onUSB(usbmux.Event{Attached: true, Device: wireless})
+	m.onUSB(usbmux.Event{Device: cable})
+	d := ids(m)["usb:U3"]
+	if !d.WifiSync || d.Transport != "wifi" || d.activeMuxID() != wireless.DeviceID {
+		t.Fatalf("expected wireless mux fallback, got %+v", d)
+	}
+	m.onUSB(usbmux.Event{Attached: true, Device: cable})
+	m.onUSB(usbmux.Event{Device: wireless})
+	d = ids(m)["usb:U3"]
+	if d.WifiSync || d.Transport != "usb" || d.activeMuxID() != cable.DeviceID {
+		t.Fatalf("wireless detach disturbed cable route: %+v", d)
+	}
+}
+
+func TestControlFailureTriesEachRouteBeforeRetryingCable(t *testing.T) {
+	d := Device{usbOK: true, usbID: 4, wifiMuxID: 7, wifiAddr: "10.0.0.2:5901"}
+	d.refresh()
+	for i, want := range []int64{4, 0, 7, 4} {
+		if d.activeMuxID() != want || d.WifiSync != (want == 7) || (d.Transport == "usb") != (want == 4) {
+			t.Fatalf("route %d: %+v", i, d)
+		}
+		d.nextControlRoute()
 	}
 }
 

@@ -122,6 +122,10 @@ func (m *Manager) onPhoneClip(id, text string) {
 		return
 	}
 	d := m.devices[id]
+	if d != nil && d.Parked {
+		m.mu.Unlock()
+		return
+	}
 	solo := !m.syncOn ||
 		(id == m.lastSoloID && time.Since(m.lastSoloAt) <= soloClipGrace) ||
 		d == nil || !d.InSync

@@ -13,9 +13,10 @@ import (
 
 // Phone is one emulated device; Connect to device port P goes to Target[P].
 type Phone struct {
-	ID     int64
-	UDID   string
-	Target map[int]string
+	ID            int64
+	UDID          string
+	Target        map[int]string
+	BeforeConnect func(port int) // optional handshake delay for tests
 }
 
 // Serve accepts usbmuxd clients on ln until it is closed.
@@ -79,6 +80,9 @@ func handle(c net.Conn, phones []Phone) {
 		port := int((pn&0xff)<<8 | (pn>>8)&0xff)
 		for _, p := range phones {
 			if p.ID == id {
+				if p.BeforeConnect != nil {
+					p.BeforeConnect(port)
+				}
 				if t, ok := p.Target[port]; ok {
 					up, err := net.Dial("tcp", t)
 					if err == nil {

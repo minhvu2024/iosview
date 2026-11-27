@@ -1,0 +1,12 @@
+--- a/src/trollvncserver.mm
++++ b/src/trollvncserver.mm
+@@ -72,2 +72,3 @@
+ static BOOL gViewOnly = NO;
++#import "PhoneActions.h"
+ static double gKeepAliveSec = 0.0; // 15..86400
+@@ -4564,3 +4565,4 @@
+     // Desktop name
+-    gScreen->desktopName = strdup([gDesktopName UTF8String]);
++    gScreen->setTextChat = ivTextAction;
++    gScreen->desktopName = strdup([[gDesktopName stringByAppendingString:@" [iosview-actions/1]"] UTF8String]);
+ 

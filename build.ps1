@@ -2,9 +2,9 @@
 # (winget install upx  hoặc  choco install upx  hoặc tải https://github.com/upx/upx/releases).
 param([switch]$Wails)   # -Wails: bản Wails v3 (0.11.0 PoC), cửa sổ frameless + Mica; cần Go >= 1.26 (go tự tải toolchain)
 $ErrorActionPreference = "Stop"
-$Version = "0.10.35"
+$Version = "0.10.60"
 $Tags = ""
-if ($Wails) { $Version = "0.11.14"; $Tags = "wails,production" }
+if ($Wails) { $Version = "0.11.39"; $Tags = "wails,production" }
 $Out = "iosview-$Version.exe"
 if (-not (Get-Command upx -ErrorAction SilentlyContinue)) { throw "Thiếu upx trong PATH" }
 Push-Location "$PSScriptRoot\web"

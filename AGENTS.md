@@ -62,6 +62,7 @@ iPhone (TrollVNC vá)                      PC: iosview-<ver>.exe (Go)           
 7. Cùng một iPhone cắm USB và có Wi‑Fi phải là **một** máy, ưu tiên USB.
 8. Với thay đổi lớn hoặc nhiều hướng: **đề xuất trước, chờ chủ dự án duyệt rồi mới sửa code.**
 9. Chỉ commit/push khi được yêu cầu.
+10. Giữ hình học giao diện ổn định khi thao tác. Cấm đổi kích thước hoặc vị trí hộp thoại, hàng và nút do chọn máy, nội dung dài, ghi phím, tải dữ liệu hay mở danh sách. Dành sẵn vị trí, rút gọn bằng dấu … và cuộn bên trong vùng nội dung. Kiểm tra kích thước trước/sau trên trình duyệt.
 
 ## 4. Build & kiểm tra
 

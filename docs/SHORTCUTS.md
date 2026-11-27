@@ -5,11 +5,23 @@ Trong app: tab **Cài đặt → Phím tắt…** để xem và đổi phím.
 
 Ký hiệu cột **iOSView**: ✅ đã làm · ⚠️ làm khác bản gốc (xem ghi chú) · ❌ chưa hỗ trợ.
 
+## Điều khiển iPhone
+
+| Hành động | Phím mặc định |
+|---|---|
+| Mở Cài đặt iPhone | `Ctrl + Shift + S` |
+| Mở Trung tâm điều khiển | `Ctrl + Shift + Space` |
+| Mở ứng dụng đã chọn | Tự gán trong **Thêm ứng dụng…** |
+
+Trong **Cài đặt → Phím tắt**, bấm vào tổ hợp đang hiển thị rồi nhấn phím mới. Nhấn **Delete** khi đang gán để bỏ phím, hoặc **Esc** để hủy. Để gán phím mở app, chọn một iPhone, bấm **Thêm ứng dụng…**, chọn tên app và nhấn tổ hợp muốn dùng. Khi bật Đồng bộ, lệnh mở áp dụng cùng phạm vi với thao tác chạm. Danh sách app lấy từ máy đã chọn.
+
+Mở trực tiếp cần TrollVNC có bản vá phím tắt iPhone. Với TrollVNC 3.3-1008 và CoreDevice, nút Trung tâm điều khiển trên màn lớn vẫn gửi cử chỉ vuốt.
+
 ## Chung
 
 | Chức năng | Phím tắt | iOSView | Ghi chú |
 |---|---|---|---|
-| Chọn tất cả điện thoại | `Ctrl + A` | ✅ | Đưa mọi máy vào nhóm đồng bộ. *Trước đây Ctrl+A là “chọn hết chữ trên iPhone” — giờ dùng nút **Chọn hết chữ** ở bảng chức năng máy.* |
+| Chọn tất cả điện thoại | `Ctrl + A` | ✅ | Đưa các máy đang sử dụng vào nhóm đồng bộ, bỏ qua ô đen. |
 | Chọn liên tục điện thoại | `Shift + nhấp trái` | ✅ | Nhấp một máy, rồi Shift+nhấp máy khác: chọn mọi máy ở giữa (theo thứ tự trên lưới). |
 | Hủy chọn điện thoại đã chọn | Nhấp trái vào chỗ trống | ✅ | Chỗ trống trong lưới máy. |
 | Điều chỉnh kích thước màn hình giám sát nhỏ | `Ctrl + cuộn chuột` | ✅ | Trên màn lớn thì đổi cỡ màn lớn. `Ctrl + + / − / 0` cũng được. |
@@ -17,7 +29,10 @@ Ký hiệu cột **iOSView**: ✅ đã làm · ⚠️ làm khác bản gốc (xe
 | Điều khiển riêng lẻ từng điện thoại | Giữ `Alt` | ✅ | Giữ Alt khi chạm / gõ / bấm nút: chỉ máy đang trỏ nhận lệnh, cả khi đang đồng bộ. |
 | Điều khiển bằng hai ngón tay | Giữ `Shift` | ❌ | TrollVNC (giao thức VNC) chỉ có **một** điểm chạm, chưa giả lập được hai ngón. |
 | Chuyển đổi nhanh màn hình lớn | `Ctrl + phím mũi tên` | ✅ | ←/↑ máy trước, →/↓ máy sau. Màn lớn đang đóng thì mở màn lớn cho máy đang trỏ. |
-| Mở màn hình lớn | Nút ⤢ trên ô máy, hoặc nhấp đúp thanh tên | ✅ | Hoặc bật `Ctrl + S` rồi nhấp màn nhỏ. Nhấp đúp vào **hình** không mở màn lớn (lần nhấp đầu là chạm thật, hay mở nhầm app). |
+| Mở màn hình lớn | `Ctrl + Shift + chuột phải` trên ô máy | ✅ | Cũng có thể dùng nút ⤢ hoặc nhấp đúp thanh tên. |
+| Tạm bỏ / đưa máy trở lại | `Ctrl + Shift + Alt + chuột phải` trên ô máy | ✅ | Bấm trên một máy đang chọn để tạm bỏ toàn bộ máy đã chọn, kể cả khi Đồng bộ tắt. Bấm trên máy ngoài nhóm để tạm bỏ riêng máy đó. Mỗi ô giữ nguyên số. Bấm lại trên ô đã tạm bỏ để khôi phục riêng máy đó. |
+| Về màn hình chính | `Ctrl + chuột phải` trên ô máy | ✅ | Cùng thao tác với nút Home. |
+| Mở bảng Phím tắt | `Ctrl + Shift + T` | ✅ | Có thể đổi tổ hợp trong bảng Phím tắt. |
 | Đóng màn hình lớn | Nhấp phải ra ngoài màn lớn | ✅ | Chỗ trống trong lưới hoặc quanh màn lớn (nhấp phải **trên** màn lớn vẫn là Quay lại). Nút **✕** và ô "Đang ở màn lớn" vẫn dùng được. |
 
 ### Phím tắt đổi được (Cài đặt → Phím tắt…)
@@ -49,7 +64,7 @@ Phím đã đổi, cụm từ nhanh và ghi chú được lưu trong `iosview.js
 |---|---|---|---|
 | Nhấp màn nhỏ = phóng to | `Ctrl + S` | ✅ | Bật/tắt (công tắc cùng tên ở khối Hiển thị). **Bật:** nhấp màn nhỏ mở máy đó ở màn lớn, nhấp máy khác thì chuyển, chuột phải đóng, lăn chuột cuộn lưới. **Tắt:** nhấp / vuốt màn nhỏ điều khiển máy. |
 | Chọn điện thoại | `Ctrl + nhấn (giữ) chuột trái` | ✅ | Bật/tắt chọn máy đó. Nhấp thanh tên máy vẫn chọn như cũ. |
-| Chọn khung điện thoại | `Ctrl + kéo chuột trái` | ✅ | Kéo khung: chọn thêm mọi máy nằm trong khung. |
+| Chọn vùng | Kéo chuột trái từ khoảng trống | ✅ | Chọn các máy trong vùng. Giữ `Ctrl` để chọn thêm hoặc bắt đầu kéo từ màn hình máy. |
 | Mở nhiệm vụ hiện tại | Nhấn và giữ chuột phải | ✅ | |
 | Quay về trang chủ | Nhấp chuột giữa | ✅ | |
 | Quay lại cấp trên | `Esc` | ✅ | Nhấp chuột phải trên màn nhỏ cũng = quay lại (giống màn lớn). |

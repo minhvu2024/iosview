@@ -189,6 +189,21 @@ func TestWheelBatchesPressAndRelease(t *testing.T) {
 	}
 }
 
+func TestPowerAlternatesWithHome(t *testing.T) {
+	m, f, d := oneDevice(t)
+	for _, button := range []string{"power", "power", "power", "home", "power"} {
+		m.Dispatch(d.ID, Button(button))
+	}
+	want := []int{maskPower, 0, maskHome, 0, maskHome, 0, maskPower, 0, maskHome, 0, maskPower, 0}
+	waitFor(t, "last release", func() bool { _, n := lastPtr(f); return n >= len(want) })
+	ptr, _, _ := f.snapshot()
+	for i, mask := range want {
+		if ptr[i][0] != mask {
+			t.Fatalf("event %d: got mask %d, want %d", i, ptr[i][0], mask)
+		}
+	}
+}
+
 func TestControlCenterGestureAndEmailClean(t *testing.T) {
 	m, f, d := oneDevice(t)
 	// 1000x2000 (aspect 2.0 >= 1.95) -> top-right Control Center swipe;

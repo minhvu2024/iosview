@@ -28,6 +28,7 @@
 #import "IOKitSPI.h"
 #import "IOSurfaceSPI.h"
 #import "Logging.h"
+#import "ScreenCapturer.h"
 
 // A client that is this many frames behind gets its backlog dropped and
 // waits for the next keyframe. Sized to absorb normal multi-phone Wi-Fi
@@ -47,6 +48,8 @@ static const int kPoolThreshold = 6;
     std::atomic<int> pending;
     std::atomic<unsigned> sendGeneration;
     BOOL needKey;
+    uint16_t refreshToken;
+    uint64_t refreshAfter;
     BOOL closed;
     uint8_t inbuf[8];
     int inlen;
@@ -77,6 +80,8 @@ static std::atomic<int> gClientCount(0);
 // coalescing frames so main returns immediately and HID injection never stalls.
 static os_unfair_lock gCaptureLock = OS_UNFAIR_LOCK_INIT;
 static CVPixelBufferRef gCapturedPB = NULL;
+static std::atomic<uint64_t> gCaptureSerial(0);
+static uint64_t gPendingSerial = 0; // gEncQ: serial of a newly copied surface
 static BOOL gCaptureScheduled = NO;
 
 // Requests from the network side to the encoder (gEncQ).
@@ -201,6 +206,7 @@ static void recoverFromEncoderError(OSStatus errCode) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), gEncQ, ^{
             if (!gSession && gRetryEncoderAt == retry && gClientCount.load() > 0 && w > 0 && h > 0 &&
                 CACurrentMediaTime() >= retry && ensureSession(w, h)) {
+                gPendingSerial = 0; // replay after an encoder error
                 setPB(&gPendingPB, last);
                 pumpEncoder();
             }
@@ -365,7 +371,7 @@ static void vtOutputImpl(void *sourceRefCon, OSStatus status, VTEncodeInfoFlags 
     uint8_t flags = key ? 1 : 0;
     if (key && gNeedDecoderReset.exchange(false))
         flags |= 4; // tell WebCodecs to rebuild its decoder after an encoder session reset
-    h[8] = flags;
+    h[8] = flags | 16; // supports in-band fresh capture requests
     h[9] = (uint8_t)((intptr_t)sourceRefCon & 3);
     h[10] = h[11] = 0;
 
@@ -392,11 +398,18 @@ static void vtOutputImpl(void *sourceRefCon, OSStatus status, VTEncodeInfoFlags 
             }
             if (key)
                 c->needKey = NO;
+            NSData *delivery = frame;
+            if (c->refreshToken && ((uintptr_t)sourceRefCon >> 3) > c->refreshAfter) {
+                NSMutableData *reply = [frame mutableCopy];
+                put16((uint8_t *)reply.mutableBytes + 10, c->refreshToken);
+                delivery = reply;
+                c->refreshToken = 0;
+            }
             c->pending.fetch_add(1);
             unsigned generation = c->sendGeneration.load();
             dispatch_async(c->sendQ, ^{
                 BOOL ok = generation != c->sendGeneration.load() ||
-                          writeAll(c->fd, (const uint8_t *)frame.bytes, frame.length);
+                          writeAll(c->fd, (const uint8_t *)delivery.bytes, delivery.length);
                 c->pending.fetch_sub(1);
                 if (!ok) {
                     // A partially written packet makes this stream unusable.
@@ -566,7 +579,7 @@ static void encodeNow(void) {
     gInFlight.fetch_add(1);
     gEncodeCalls++;
     OSStatus st = VTCompressionSessionEncodeFrame(gSession, pb, pts, kCMTimeInvalid, (__bridge CFDictionaryRef)props,
-                                                  (void *)(intptr_t)(rot | (key ? 4 : 0)), NULL);
+                                                  (void *)(uintptr_t)(((isRefine ? 0 : gPendingSerial) << 3) | rot | (key ? 4 : 0)), NULL);
     gLastEncodeAt = CACurrentMediaTime();
     if (st != noErr) {
         gInFlight.fetch_sub(1);
@@ -589,6 +602,11 @@ static void pumpEncoder(void) {
         return;
     double minInterval = 1.0 / (double)(gMaxFps > 0 ? gMaxFps : 60) * 0.9;
     double wait = minInterval - (CACurrentMediaTime() - gLastEncodeAt);
+    if (gInFlight.load() >= kMaxInFlight && CACurrentMediaTime() - gLastEncodeAt > 3.0) {
+        TVLog(@"H264: encoder stopped returning frames");
+        recoverFromEncoderError(kVTVideoEncoderMalfunctionErr);
+        return;
+    }
     if (gInFlight.load() >= kMaxInFlight || wait > 0) {
         if (!gPumpScheduled) {
             gPumpScheduled = YES;
@@ -606,6 +624,7 @@ static void pumpEncoder(void) {
 static void drainCapturedFrame(void) {
     os_unfair_lock_lock(&gCaptureLock);
     CVPixelBufferRef src = gCapturedPB;
+    uint64_t serial = gCaptureSerial.load(std::memory_order_relaxed);
     gCapturedPB = NULL;
     gCaptureScheduled = NO;
     os_unfair_lock_unlock(&gCaptureLock);
@@ -629,6 +648,7 @@ static void drainCapturedFrame(void) {
                 gCopies++;
                 if (gPendingPB && gPendingPB != gLastPB) gSupersededCopies++;
                 setPB(&gPendingPB, copy);
+                gPendingSerial = serial;
                 CVPixelBufferRelease(copy);
                 pumpEncoder();
             }
@@ -652,6 +672,7 @@ void TVH264PushFrame(CMSampleBufferRef sampleBuffer) {
         return;
     gCaptureCount.fetch_add(1, std::memory_order_relaxed);
     os_unfair_lock_lock(&gCaptureLock);
+    gCaptureSerial.fetch_add(1, std::memory_order_relaxed);
     setPB(&gCapturedPB, src);
     BOOL wake = !gCaptureScheduled;
     gCaptureScheduled = YES;
@@ -751,7 +772,7 @@ static void sendIdent(TVH264Client *c) {
 
 // Length of a command with arguments (0 = not one).
 static int commandLength(uint8_t c) {
-    return c == 'B' ? 5 : c == 'P' ? 3 : 0;
+    return c == 'B' ? 5 : (c == 'P' || c == 'F') ? 3 : 0;
 }
 
 static void handleClientBytes(TVH264Client *c, const uint8_t *buf, ssize_t n) {
@@ -777,6 +798,12 @@ static void handleClientBytes(TVH264Client *c, const uint8_t *buf, ssize_t n) {
                             ((uint32_t)c->inbuf[3] << 8) | c->inbuf[4];
             if (kbps >= 100 && kbps <= 20000)
                 gNewBitrateKbps.store((int)kbps);
+        } else if (c->inbuf[0] == 'F') {
+            c->refreshToken = ((uint16_t)c->inbuf[1] << 8) | c->inbuf[2];
+            c->refreshAfter = gCaptureSerial.load();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
+            });
         } else { // 'P'
             int fps = c->inbuf[1] & 0x7f, pct = c->inbuf[2] & 0x7f;
             if (fps < 5 || fps > 60 || pct < 25 || pct > 100 || !gEncQ)

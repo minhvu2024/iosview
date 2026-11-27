@@ -8,7 +8,7 @@
 <link rel="icon" type="image/svg+xml" href="icon.svg">
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="style.css">
-<script>try{var t=localStorage.getItem("iosview.theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t;}catch(e){}</script>
+<script>try{if(localStorage.getItem("iosview.softmint.theme")==="dark")document.documentElement.dataset.theme="dark";}catch(e){}</script>
 </head>
 <body>
 <div class="app">
@@ -40,7 +40,7 @@
       <img class="brand-mk" src="icon.svg" alt="">
       <div class="brand-txt"><b>iOSView</b><small>Điều khiển nhiều iPhone</small></div>
       <div class="brand-tools">
-        <button id="themeBtn" title="Chuyển giao diện Graphite / Carbon Dark" aria-label="Đổi chế độ màu"></button>
+        <button id="themeBtn" title="Đổi chế độ màu" aria-label="Đổi chế độ màu"></button>
         <button id="collapseBtn" title="Thu gọn / mở rộng bảng"></button>
       </div>
     </div>
@@ -61,7 +61,7 @@
       </div>
       <div class="blk" id="viewBlk">
       <div class="blk-h">Hiển thị</div>
-      <div id="viewBtns"></div>
+      <div id="viewBtns" class="rows"></div>
       <div class="sliders">
         <div class="sl"><label for="sStage">Cỡ màn lớn</label><input id="sStage" type="range" min="40" max="100" step="5"><output id="oStage"></output></div>
         <div class="sl"><label for="sTile">Cỡ màn nhỏ</label><input id="sTile" type="range" min="110" max="380" step="10"><output id="oTile"></output></div>
@@ -79,7 +79,7 @@
       </div>
       <div class="tags-h">
         <span>Nhãn</span>
-        <button id="addTag" class="link-btn" title="Tạo nhãn gồm các máy đang chọn"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>Thêm nhãn</button>
+        <button id="addTag" class="link-btn" title="Tạo nhãn gồm các máy đang chọn"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14M12 5v14"/></svg>Thêm nhãn</button>
       </div>
       <form id="tagNew" class="tag-new" hidden autocomplete="off">
         <input id="tagName" maxlength="32" placeholder="Tên nhãn (gồm các máy đang chọn)">
@@ -92,36 +92,46 @@
     <div class="ctrl-b" data-pane="conn" hidden>
       <div id="usbWarn" class="warn" hidden></div>
       <div class="stack">
-        <label for="wifiAddr">Danh sách IP Wi‑Fi — mỗi IP 1 dòng (nhập, dán hoặc xoá sẽ tự động cập nhật ngay)</label>
+        <label for="wifiAddr" title="Tự lưu theo thứ tự dòng. Xoá IP để ngắt kết nối Wi‑Fi.">IP Wi‑Fi · mỗi dòng một IP</label>
         <textarea id="wifiAddr" rows="10" placeholder="192.168.1.23&#10;192.168.1.24&#10;192.168.1.25:5901" spellcheck="false" aria-describedby="wifiError"></textarea>
         <p id="wifiError" class="note" aria-live="polite"></p>
       </div>
       <button id="clearWifiBtn" type="button" class="wide">Xoá hết máy Wi‑Fi</button>
-      <p class="note">Danh sách IP được tự động lưu cho cả lần mở sau, thứ tự máy xếp đúng theo thứ tự dòng. Đổi vị trí dòng IP để sắp lại thứ tự; xoá dòng IP trong ô sẽ ngắt kết nối và xoá máy đó ngay (không ảnh hưởng máy cắm USB).</p>
     </div>
 
     <div class="ctrl-b" data-pane="set" hidden>
+      <div class="vid">
+        <div class="vid-h">Màu giao diện</div>
+        <div class="color-settings">
+          <label for="workspaceColor">Màu nền</label>
+          <div id="workspaceColors" class="color-options"></div>
+          <input id="workspaceColor" type="color" title="Chọn màu nền tuỳ ý">
+          <label for="frameBorderColor">Viền máy</label>
+          <div id="frameBorderColors" class="color-options"></div>
+          <input id="frameBorderColor" type="color" title="Chọn màu viền máy tuỳ ý">
+          <label for="selectionColor">Viền khi chọn</label>
+          <div id="selectionColors" class="color-options"></div>
+          <input id="selectionColor" type="color" title="Chọn màu viền tuỳ ý">
+        </div>
+        <button id="resetColors" class="soft" type="button">Khôi phục màu</button>
+      </div>
       <form id="setForm" class="stack" autocomplete="off">
-        <label for="setPw">Mật khẩu TrollVNC (để trống nếu không đặt)</label>
+        <label for="setPw" title="Để trống nếu máy không đặt mật khẩu">Mật khẩu TrollVNC</label>
         <input id="setPw" type="password" maxlength="8">
         <label for="setPort">Cổng VNC trên iPhone</label>
-        <input id="setPort" type="number" min="1" max="65535">
-        <label class="check"><input id="setH264" type="checkbox"><span>Dùng H.264 nén phần cứng<small>Cần TrollVNC bản iOSView. Máy chưa cài tự dùng JPEG.</small></span></label>
-        <label class="check"><input id="setStrip" type="checkbox"><span>Bỏ dấu tiếng Việt khi dán<small>Nguyễn → Nguyen. Tắt thì chữ có dấu nạp vào clipboard máy để chạm Paste.</small></span></label>
-        <button type="submit" class="primary">Lưu cài đặt</button>
+        <input id="setPort" type="number" min="1" max="65535" required>
+        <label class="check" title="Cần TrollVNC bản iOSView"><input id="setH264" type="checkbox"><span>Dùng H.264 nén phần cứng</span></label>
+        <label class="check" title="Ví dụ: Nguyễn → Nguyen"><input id="setStrip" type="checkbox"><span>Bỏ dấu tiếng Việt khi dán</span></label>
       </form>
       <div class="vid">
         <div class="vid-h">Hình H.264 <small>fps 5–60 · độ phân giải 25–100 %</small></div>
         <div class="vid-r"><span>Màn nhỏ</span><input id="vGF" type="number" min="5" max="60"><em>fps</em><input id="vGS" type="number" min="25" max="100" step="5"><em>%</em></div>
         <div class="vid-r"><span>Màn lớn</span><input id="vBF" type="number" min="5" max="60"><em>fps</em><input id="vBS" type="number" min="25" max="100" step="5"><em>%</em></div>
-        <p class="note">Thấp hơn = iPhone mát và nhẹ hơn. Đổi là áp dụng ngay. Riêng từng máy: chuột phải vào máy → <b>Hình riêng cho máy này…</b> Cần TrollVNC 3.3‑1004 trên iPhone.</p>
+        <div id="videoStats" class="rows"></div>
       </div>
       <label class="check"><input id="setCopyBlank" type="checkbox" role="switch"><span>Dòng trống giữa dữ liệu copy</span></label>
       <button id="keysBtn" type="button" class="wide">Phím tắt…</button>
       <button id="updCheck" type="button" class="wide">Kiểm tra cập nhật</button>
-      <p class="note">Trên màn hình máy: <b>trái</b> = chạm · <b>phải</b> = quay lại · <b>giữ phải</b> = đa nhiệm · <b>giữa</b> = Home · <b>Esc</b> = quay lại · giữ <b>Alt</b> = chỉ máy đang trỏ. <b>Ctrl+A</b> chọn tất cả máy · <b>Shift+nhấp</b> chọn liên tục · <b>Ctrl+kéo</b> chọn khung · nhấp chỗ trống = bỏ chọn. Nút <b>⤢</b> trên ô máy = mở màn lớn.</p>
-      <p class="note">Nhấp đúp <b>số máy</b> để đổi số (trùng số thì hai máy đổi cho nhau), nhấp đúp <b>tên</b> để đổi tên, nút ⤢ hoặc nhấp đúp thanh tên để mở màn lớn.</p>
-      <p class="note">Ảnh chụp màn hình lưu trong thư mục <code>screenshots</code> cạnh iosview.exe.</p>
     </div>
 
     <div class="ctrl-f">
@@ -152,8 +162,14 @@
 
 <!-- danh sách phím tắt -->
 <dialog id="keysDlg" class="dlg keys-dlg">
-  <div class="dlg-h"><b>Phím tắt</b><button id="keysReset" class="soft">Khôi phục mặc định</button><button id="keysClose" class="ib" title="Đóng (Esc)">✕</button></div>
-  <div id="keysBody" class="keys-b"></div>
+  <div class="dlg-h"><b>Phím tắt</b><button id="keysClose" class="ib" title="Đóng (Esc)">✕</button></div>
+  <div id="keysBody" class="keys-b">
+    <h3>Điều khiển iPhone</h3>
+    <ul id="phoneKeyRows"></ul>
+    <div class="keys-app"><select id="appPicker" aria-label="Thêm phím tắt cho ứng dụng iPhone"></select></div>
+    <div id="localKeyRows"></div>
+  </div>
+  <footer class="keys-f"><button id="keysReset" class="soft">Khôi phục mặc định</button></footer>
 </dialog>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="app.js"></script>

@@ -37,8 +37,8 @@ Máy không cắm USB: mở tab **Kết nối** ở bảng bên phải để nh�
 |---|---|
 | Lưới máy (trái) | Mỗi ô có **số máy** (01, 02… giữ nguyên khi khởi động lại, đổi được), **tên**, nhãn USB / Wi‑Fi, chấm trạng thái, nút ⤢ mở màn lớn. Lưới luôn xếp theo số từ nhỏ tới lớn. Viền **xanh** = đang chọn (thuộc nhóm đồng bộ), viền **tím** = máy đang mở ở màn lớn |
 | Màn lớn | Nhấp vào **hình** là chạm, gửi ngay xuống máy. Mở: nút **⤢** trên ô máy, nhấp đúp thanh tên, nhấp đúp số trong lưới số, hoặc bật **Ctrl+S** (nhấp màn nhỏ = phóng to; tắt = nhấp/vuốt điều khiển). Đóng: **nhấp phải ra ngoài màn lớn**, Màn lớn **nổi** trên lưới. **✕** trên thanh công cụ hoặc nhấp ô "Đang ở màn lớn". **Ctrl + ←/→** chuyển sang máy trước/sau; ⤢ ở máy khác cũng chuyển, không đóng-mở. Nút **⛶ Toàn cửa sổ** trên thanh công cụ: màn lớn chiếm cả cửa sổ (ẩn lưới + bảng), bấm lại để về cỡ thường |
-| Thanh công cụ màn lớn | Ngay dưới màn lớn: Đổi tên, Dán, Chọn hết chữ, Xoá ô nhập, Tắt tiếng, Chụp, Phóng to, Đóng. Rê chuột vào dòng chú thích để xem thông tin kết nối (USB/Wi‑Fi, độ phân giải, iOS, UDID). Màn lớn **nổi trên lưới** (lưới không xê dịch), mở/đóng bằng chuyển động phóng từ ô máy |
-| Bảng điều khiển (phải) | 5 khối: **Nhóm máy** (Đồng bộ, Chọn hết/Bỏ chọn) · **Điều khiển** (Home, Đa nhiệm, Quay lại, Khoá, Vol, Dán, Xoá ô, Chụp) · **Gõ văn bản** · **Hiển thị** (bộ chọn *Nhấp màn nhỏ: Điều khiển / Phóng to*, Màn lớn, FPS, thanh trượt cỡ/độ nét) · **Lọc & nhãn máy**. Tab **Kết nối** và **Cài đặt**. Nút ☾ đổi giao diện sáng/tối (mặc định luôn sáng), » thu gọn bảng |
+| Thanh công cụ màn lớn | Trung tâm điều khiển, sao chép ảnh máy đang xem, toàn cửa sổ và đóng. Menu chuột phải của từng máy có các lệnh văn bản và âm lượng. |
+| Bảng điều khiển | Chọn nhóm, đồng bộ, khóa, gửi văn bản, cỡ màn hình và lọc máy. FPS và độ nét nằm trong Cài đặt → Hình H.264. |
 
 ### Đổi tên, chọn máy, nhãn
 
@@ -48,7 +48,7 @@ Máy không cắm USB: mở tab **Kết nối** ở bảng bên phải để nh�
 - **Phóng to / thu nhỏ màn hình máy:** **Ctrl + lăn chuột** (hoặc Ctrl + / Ctrl −) trên lưới đổi cỡ các ô; trên màn lớn đổi cỡ màn lớn. **Ctrl+0** về cỡ mặc định. Cửa sổ chương trình không bị zoom nữa.
 - **Nhãn máy:** chọn các máy rồi bấm **Thêm nhãn**. Tick ô vuông của nhãn = chọn cả nhóm; nhấp tên nhãn = chỉ hiện máy của nhãn đó; nhấp đúp = đổi tên nhãn; ↻ = cập nhật nhãn theo các máy đang chọn.
 - **Fps / độ phân giải (iPhone nóng, lag):** tab **Cài đặt → Hình H.264**. Mặc định màn nhỏ 30 fps · 50 %, màn lớn 60 fps · 100 %. Chuột phải → **Hình riêng cho máy này…**, nhập `60 100` để máy chính giữ hình ở độ phân giải gốc khi chuyển giữa lưới và màn lớn, hoặc thử `20 40` cho máy yếu. Thiết lập áp dụng ngay và cần TrollVNC 3.3‑1004 trở lên.
-- **Chụp màn hình:** ảnh PNG lưu vào thư mục `screenshots` cạnh exe, tên file có số và tên máy.
+- **Chụp màn hình:** bấm biểu tượng máy ảnh ở màn lớn hoặc chọn **Sao chép ảnh máy này** trong menu chuột phải. Nhấn **Ctrl+V** ở ứng dụng đích để dán ảnh.
 
 ## Cập nhật cho nhân viên (bản nội bộ)
 
@@ -144,6 +144,15 @@ Tham số dòng lệnh: `-listen 0.0.0.0:7788` (mở cho máy khác trong LAN; c
 Icon nằm ở `assets/` (`icon.svg` là bản gốc, cũng dùng cho `web/src/icon.svg|png`). Muốn đổi icon: render SVG ra PNG 16–256 → gộp thành `iosview.ico` → `go run github.com/akavel/rsrc@v0.10.2 -ico assets/iosview.ico -arch amd64 -o cmd/iosview/rsrc_windows_amd64.syso`. Icon trong giao diện lấy từ bộ **Lucide** (bảng `IC` trong `web/src/main.ts`).
 
 ## 6. Xử lý sự cố
+
+- **So độ mượt USB và Wi‑Fi.** iOSView ưu tiên cáp, tiếp đến IP Wi‑Fi đã liên kết, cuối cùng là kết nối Wi‑Fi qua dịch vụ Apple nếu có. Trỏ chuột vào nhãn Wi‑Fi để xem đường đang dùng. Để đo trên Windows, thoát iOSView rồi chạy trong PowerShell:
+
+  ```powershell
+  $env:IOSVIEW_H264_TIMING = "1"
+  .\iosview-0.11.38.exe
+  ```
+
+  Khi có hình, `iosview.log` ghi khoảng cách lớn nhất giữa hai khung nhận đủ tại PC và thời gian ghi WebSocket lâu nhất theo từng đợt khoảng 5 giây. Lúc xin chụp lại, log ghi cả thời gian mở kết nối phụ và kết quả. So cùng một đoạn video đang chuyển động, cùng chế độ hình và FPS. Màn hình tĩnh cũng có thể tạo khoảng nghỉ dài. Để tắt đo, thoát ứng dụng, chạy `Remove-Item Env:IOSVIEW_H264_TIMING` trong cửa sổ PowerShell đó rồi mở lại.
 
 - **"không kết nối được usbmuxd"**: chưa cài Apple Devices/iTunes, hoặc dịch vụ *Apple Mobile Device Service* chưa chạy.
 - **"cổng 5901 trên iPhone đang đóng"**: TrollVNC chưa bật, hoặc port khác với tab Cài đặt.

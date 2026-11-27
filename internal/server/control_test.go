@@ -150,6 +150,31 @@ func TestControlCloseLiftsTouch(t *testing.T) {
 	}
 }
 
+func TestControlBackpressure(t *testing.T) {
+	states := make(chan []byte, 1)
+	offerControlState(states, []byte("old"))
+	offerControlState(states, []byte("latest"))
+	if got := string(<-states); got != "latest" {
+		t.Fatalf("pending snapshot = %q, want latest", got)
+	}
+
+	for _, kind := range []string{"toast", "textAck", "wifi", "clipboardCopy"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			out := make(chan []byte, 1)
+			offerControlReply(out, map[string]any{"t": kind}, cancel)
+			if ctx.Err() != nil || len(out) != 1 {
+				t.Fatal("reply should fit without closing the connection")
+			}
+			offerControlReply(out, map[string]any{"t": kind}, cancel)
+			if (ctx.Err() != nil) != (kind != "toast") {
+				t.Fatalf("unexpected cancellation state for %s: %v", kind, ctx.Err())
+			}
+		})
+	}
+}
+
 func TestUIPrefsEndpoint(t *testing.T) {
 	t.Setenv("USBMUXD_SOCKET_ADDRESS", "127.0.0.1:1")
 	cfg, _ := device.LoadConfig(filepath.Join(t.TempDir(), "c.json"))

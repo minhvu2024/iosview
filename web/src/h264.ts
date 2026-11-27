@@ -24,6 +24,11 @@ const MAX_BACKLOG = 10;
 // Keyframe requests ('K') at most this often; re-sent while still waiting.
 const KEY_RETRY_MS = 1000;
 const HIDDEN_DECODE_GRACE_MS = 1500;
+const INPUT_FRAME_GRACE_MS = 700;
+const IDLE_CAPTURE_MS = 12000;
+const CAPTURE_INTERVAL_MS = 100;
+const DECODE_STALL_MS = 500;
+const RECENT_PACKET_MS = 750;
 
 // Single shared rAF loop across all active tiles so 20–40 screens render in one
 // pass instead of scheduling dozens of separate animation-frame callbacks.
@@ -56,6 +61,9 @@ function codecFromSPS(d: Uint8Array): string {
 }
 
 export class H264View {
+  private static pendingCaptures = new Set<H264View>();
+  private static captureTimer = 0;
+
   readonly canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private ws: WebSocket;
@@ -85,19 +93,35 @@ export class H264View {
   private lastPacketAt = 0;
   private lastDrawAt = 0;
   private drawIntervals: number[] | null = null;
-  private burst = 0;
   private probeAt = 0;
-  private checkAfterInput = false;
+  private freshCapture = false;
+  private probeToken = 0;
+  private taggedTimestamp = -1;
+  private confirmedTimestamp = Infinity;
+  private awaitingTunnel: boolean;
+  private inputAt: number | null = null;
+  private firstUndecodedPacketAt = 0;
+  private packetsWithoutOutput = 0;
+  private lastCaptureRequest = -Infinity;
+  private preferSoftware: boolean;
+  private softwareProducedFrame: boolean;
+  screenOff = false;
   private awaitingCodec: boolean;
   closed = false;
 
   onframe = () => {};
   onbytes = (_n: number) => {};
   onfirst = () => {};
+  onready = () => {};
   onclose = (_gotFrame: boolean) => {};
+  onSoftwareFrame = () => {};
 
-  constructor(container: HTMLElement, url: string, quality: number, profile: Profile, awaitingCodec = false) {
+  constructor(container: HTMLElement, url: string, quality: number, profile: Profile, awaitingCodec = false,
+    private readonly isGridView = () => true, preferSoftware = false) {
     this.awaitingCodec = awaitingCodec;
+    this.awaitingTunnel = !awaitingCodec && url.toString().endsWith("?ready=1");
+    this.preferSoftware = preferSoftware;
+    this.softwareProducedFrame = preferSoftware;
     this.q = quality;
     this.prof = profile;
     // Reuse an existing canvas in the container so background reconnects keep
@@ -114,10 +138,16 @@ export class H264View {
     this.ws = new WebSocket(url, ["binary"]);
     this.ws.binaryType = "arraybuffer";
     this.ws.onopen = () => { this.needKeySince = performance.now(); this.sendBitrate(); this.sendProfile(); };
-    this.ws.onmessage = (e) => this.onMessage(e.data as ArrayBuffer);
+    this.ws.onmessage = (e) => {
+      if (e.data === "ready") {
+        this.awaitingTunnel = false;
+        this.needKeySince = performance.now();
+        this.onready();
+      } else if (typeof e.data !== "string") this.onMessage(e.data as ArrayBuffer);
+    };
     this.ws.onclose = () => this.finish();
     this.ws.onerror = () => this.finish();
-    this.watchdog = window.setInterval(() => this.checkHealth(), 1500);
+    this.watchdog = window.setInterval(() => this.checkHealth(), 500);
   }
 
   get qualityLevel() { return this.q; }
@@ -140,9 +170,10 @@ export class H264View {
   set paused(p: boolean) {
     if (this.closed || p === this.isPaused) return;
     this.isPaused = p;
-    this.burst = 0;
     this.probeAt = 0;
-    this.checkAfterInput = false;
+    this.inputAt = null;
+    this.packetsWithoutOutput = 0;
+    H264View.pendingCaptures.delete(this);
     if (p) {
       pendingViews.delete(this);
       if (this.decodedFrame) this.scheduleDecodePause();
@@ -212,35 +243,98 @@ export class H264View {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.send(new Uint8Array([0x4b])); // 'K'
   }
 
+  private usableStream() {
+    return !this.closed && !this.isPaused && !this.screenOff && !this.awaitingCodec && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  // A forced H.264 capture can open another connection to the phone. Pace
+  // these across the grid, and discard requests for views that recovered.
+  private static scheduleCapture() {
+    if (this.captureTimer || !this.pendingCaptures.size) return;
+    this.captureTimer = window.setTimeout(() => {
+      this.captureTimer = 0;
+      for (const view of this.pendingCaptures) {
+        this.pendingCaptures.delete(view);
+        if (!view.usableStream() || view.needKey || view.probeAt) continue;
+        view.probeStream(performance.now());
+        break;
+      }
+      this.scheduleCapture();
+    }, CAPTURE_INTERVAL_MS);
+  }
+
+  private probeStream(now: number) {
+    this.probeAt = now;
+    this.lastCaptureRequest = now;
+    this.confirmedTimestamp = Infinity;
+    this.taggedTimestamp = -1;
+    if (this.freshCapture) {
+      this.probeToken = this.probeToken % 65535 + 1;
+      this.ws.send(new Uint8Array([0x46, this.probeToken >> 8, this.probeToken & 255]));
+    } else this.ws.send(new Uint8Array([this.hevc ? 0x4b : 0x52]));
+  }
+
   private checkHealth() {
-    if (this.closed || this.isPaused || this.awaitingCodec || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.usableStream() || this.awaitingTunnel) return;
     const now = performance.now();
+    if (this.probeAt && this.freshCapture && now - this.probeAt >= 1500) {
+      this.disconnect();
+      return;
+    }
+    const decoderStalled = this.packetsWithoutOutput >= 4 && now - this.firstUndecodedPacketAt >= DECODE_STALL_MS
+      && now - this.lastPacketAt < RECENT_PACKET_MS;
+    if (decoderStalled && !this.preferSoftware && !this.hevc && this.isGridView()) {
+      this.preferSoftware = true;
+      if (!this.freshCapture) this.probeAt = 0;
+      H264View.pendingCaptures.delete(this);
+      this.resetDecoder();
+      return;
+    }
     if (!this.needKey) {
-      if (now - this.lastDecodedAt < 1500) return;
-      if (this.lastPacketAt > this.lastDecodedAt && now - this.lastPacketAt < 1000) {
-        // Transport is live but the decoder stopped producing output.
-        if (this.dec && this.dec.state !== "closed") this.dec.close();
-        this.dec = null;
-        this.requestKey();
+      if (this.next && now - this.lastDrawAt > 1000) this.flushFrame();
+      if (decoderStalled) {
+        H264View.pendingCaptures.delete(this);
+        if (!this.freshCapture) this.probeAt = 0;
+        this.resetDecoder();
         return;
       }
-      if (!this.checkAfterInput && this.burst < 4 && !this.probeAt) return;
-      if (this.probeAt && now - this.probeAt >= 2500) { this.disconnect(); return; }
-      if (!this.probeAt) {
-        this.probeAt = now;
-        this.ws.send(new Uint8Array([0x4b]));
+      if (this.probeAt) {
+        if (now - this.probeAt >= 1500) this.disconnect();
+        return;
+      }
+      const missingInputFrame = this.inputAt !== null && now - this.inputAt >= INPUT_FRAME_GRACE_MS;
+      if (!missingInputFrame && now - this.lastDecodedAt < IDLE_CAPTURE_MS) return;
+      if (now - this.lastCaptureRequest < 2000) return;
+      if (this.hevc) this.probeStream(now);
+      else {
+        H264View.pendingCaptures.add(this);
+        H264View.scheduleCapture();
       }
       return;
     }
     const waited = performance.now() - this.needKeySince;
-    if (waited > 2500) {
+    // The WebSocket can open before the phone tunnel has finished its handshake.
+    // Tile's first-frame timer bounds startup even if no packets ever arrive.
+    if (this.lastPacketAt && waited > 2500) {
       this.disconnect();
       return;
     }
     if (waited >= KEY_RETRY_MS) this.requestKey();
   }
 
-  expectFrame() { if (this.decodedFrame) this.checkAfterInput = true; }
+  expectFrame() {
+    if (this.decodedFrame && this.usableStream()) this.inputAt ??= performance.now();
+  }
+
+  private resetDecoder() {
+    if (this.dec && this.dec.state !== "closed") this.dec.close();
+    this.dec = null;
+    this.recvAt.clear();
+    this.packetsWithoutOutput = 0;
+    this.needKey = true;
+    this.needKeySince = performance.now();
+    this.requestKey();
+  }
 
   private onMessage(buf: ArrayBuffer) {
     if (this.closed || buf.byteLength < 12) return;
@@ -249,9 +343,16 @@ export class H264View {
     const n = v.getUint32(0);
     const flags = v.getUint8(8);
     if (flags & 8) { this.setHEVC(new Uint8Array(buf, 12, Math.min(n, buf.byteLength - 12))); return; }
+    this.awaitingTunnel = false;
+    if (flags & 16) this.freshCapture = true;
     if (this.decodeSuspended) return;
     const now = performance.now();
-    this.burst = !this.isPaused && now - this.lastPacketAt < 180 ? Math.min(4, this.burst + 1) : 1;
+    if (!this.lastPacketAt && this.needKey) this.needKeySince = now;
+    if (!this.packetsWithoutOutput || now - this.lastPacketAt >= RECENT_PACKET_MS) {
+      this.firstUndecodedPacketAt = now;
+      this.packetsWithoutOutput = 0;
+    }
+    this.packetsWithoutOutput++;
     this.lastPacketAt = now;
     const key = (flags & 1) === 1;
     const w = v.getUint16(4), h = v.getUint16(6);
@@ -280,6 +381,8 @@ export class H264View {
       if (!key && dec.decodeQueueSize > MAX_BACKLOG) { this.dropped++; this.requestKey(); return; }
       // Rotation rides in the timestamp's low bits so it stays paired with its frame.
       const ts = this.seq++ * 4 + rot;
+      if (this.probeAt && this.freshCapture && v.getUint16(10) === this.probeToken && this.probeToken)
+        this.taggedTimestamp = ts;
       if (this.recvAt.size > 64) this.recvAt.clear();   // decoder reset / frames never output
       this.recvAt.set(ts, performance.now());
       dec.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: ts, data }));
@@ -312,9 +415,8 @@ export class H264View {
       output: (f) => { if (this.dec === dec) this.draw(f); else f.close(); },
       error: (e) => { console.warn("H264 decoder:", e?.message || e); if (this.dec === dec) { this.dec = null; this.requestKey(); } },
     });
-    // "no-preference": Chrome/Edge still pick the GPU decoder when there is one,
-    // but keep working (software) on machines without it.
-    this.cfg = { codec, optimizeForLatency: true, hardwareAcceleration: "no-preference" };
+    const software = this.preferSoftware && !this.hevc && this.isGridView();
+    this.cfg = { codec, optimizeForLatency: true, hardwareAcceleration: software ? "prefer-software" : "no-preference" };
     if (this.hevc) this.cfg.description = this.hevc.description;
     this.dec = dec;
     dec.configure(this.cfg);
@@ -329,8 +431,16 @@ export class H264View {
     if (!this.decodedFrame && this.isPaused) this.scheduleDecodePause();
     this.decodedFrame = true;
     this.lastDecodedAt = performance.now();
-    this.probeAt = 0;
-    this.checkAfterInput = false;
+    if (this.probeAt && f.timestamp === this.taggedTimestamp)
+      this.confirmedTimestamp = f.timestamp;
+    if (!this.freshCapture) this.probeAt = 0;
+    this.inputAt = null;
+    this.packetsWithoutOutput = 0;
+    H264View.pendingCaptures.delete(this);
+    if (!this.softwareProducedFrame && this.cfg?.hardwareAcceleration === "prefer-software") {
+      this.softwareProducedFrame = true;
+      this.onSoftwareFrame();
+    }
     if (this.next) {
       this.recvAt.delete(this.next.timestamp);
       this.next.close();
@@ -383,6 +493,7 @@ export class H264View {
     else if (rot === 2) x.setTransform(-1, 0, 0, -1, w, h);
     else x.setTransform(0, -1, 1, 0, 0, w);
     x.drawImage(f, 0, 0);
+    if (this.probeAt && f.timestamp >= this.confirmedTimestamp) this.probeAt = 0;
     const drawn = performance.now();
     if (this.lastDrawAt && this.drawIntervals && this.drawIntervals.length < 240)
       this.drawIntervals.push(drawn - this.lastDrawAt);
@@ -404,6 +515,7 @@ export class H264View {
     try { this.dec?.close(); } catch { /* ignore */ }
     this.dec = null;
     pendingViews.delete(this);
+    H264View.pendingCaptures.delete(this);
     this.next?.close();
     this.next = null;
     this.onclose(this.gotFrame);
